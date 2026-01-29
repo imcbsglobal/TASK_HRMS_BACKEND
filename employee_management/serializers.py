@@ -31,15 +31,14 @@ class EmployeeSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'employee_id', 'candidate', 'candidate_id',
             # Basic Details
-            'first_name', 'last_name', 'email', 'phone',
+            'first_name', 'last_name', 'email', 'phone', 'profile_image',
             'department', 'department_name', 'position', 
             'employment_type', 'status',
             'date_of_birth', 'date_of_joining',
             'address', 'emergency_contact', 'emergency_contact_name',
             'emergency_contact_relationship',
             # Salary Details
-            'salary', 'salary_currency', 'payment_frequency',
-            'bonus_eligible', 'bonus_amount', 'allowances', 'deductions',
+            'salary', 'salary_currency',
             # Bank Details
             'bank_name', 'account_number', 'account_holder_name',
             'ifsc_code', 'branch_name', 'account_type',

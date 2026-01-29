@@ -37,7 +37,7 @@ class EmployeeListCreateView(APIView):
 class EmployeeDetailView(APIView):
     def put(self, request, pk):
         employee = Employee.objects.get(pk=pk)
-        serializer = EmployeeSerializer(employee, data=request.data)
+        serializer = EmployeeSerializer(employee, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)

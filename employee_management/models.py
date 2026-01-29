@@ -30,6 +30,7 @@ class Employee(models.Model):
     last_name = models.CharField(max_length=100)
     email = models.EmailField()
     phone = models.CharField(max_length=20, blank=True)
+    profile_image = models.ImageField(upload_to='employee_images/', null=True, blank=True)
 
     department = models.ForeignKey(
         Department,
@@ -53,20 +54,6 @@ class Employee(models.Model):
     # Salary Details
     salary = models.DecimalField(max_digits=10, decimal_places=2)
     salary_currency = models.CharField(max_length=10, default="USD", blank=True)
-    payment_frequency = models.CharField(
-        max_length=20, 
-        choices=[
-            ('monthly', 'Monthly'),
-            ('biweekly', 'Bi-weekly'),
-            ('weekly', 'Weekly')
-        ],
-        default='monthly',
-        blank=True
-    )
-    bonus_eligible = models.BooleanField(default=False)
-    bonus_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    allowances = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    deductions = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
 
     # Bank Details
     bank_name = models.CharField(max_length=100, blank=True)
