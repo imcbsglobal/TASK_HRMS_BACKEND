@@ -23,9 +23,27 @@ class EmployeeSerializer(serializers.ModelSerializer):
         source="department.name", read_only=True
     )
     candidate_id = serializers.IntegerField(
-        source="candidate.id", read_only=True
+        source="candidate.id", read_only=True, allow_null=True
     )
 
     class Meta:
         model = Employee
-        fields = "__all__"
+        fields = [
+            'id', 'employee_id', 'candidate', 'candidate_id',
+            # Basic Details
+            'first_name', 'last_name', 'email', 'phone',
+            'department', 'department_name', 'position', 
+            'employment_type', 'status',
+            'date_of_birth', 'date_of_joining',
+            'address', 'emergency_contact', 'emergency_contact_name',
+            'emergency_contact_relationship',
+            # Salary Details
+            'salary', 'salary_currency', 'payment_frequency',
+            'bonus_eligible', 'bonus_amount', 'allowances', 'deductions',
+            # Bank Details
+            'bank_name', 'account_number', 'account_holder_name',
+            'ifsc_code', 'branch_name', 'account_type',
+            # Timestamps
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['employee_id', 'created_at', 'updated_at', 'department_name', 'candidate_id']
