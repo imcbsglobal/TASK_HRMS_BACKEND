@@ -3,8 +3,8 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from HR.models import Candidate
-from .models import Employee, Department
-from .serializers import EmployeeSerializer, DepartmentSerializer
+from .models import Employee, Department, CustomFieldDefinition
+from .serializers import EmployeeSerializer, DepartmentSerializer, CustomFieldDefinitionSerializer
 
 
 class CandidateToEmployeeView(APIView):
@@ -105,5 +105,63 @@ class DepartmentDetailView(APIView):
         except Department.DoesNotExist:
             return Response(
                 {"error": "Department not found"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+
+class CustomFieldDefinitionListCreateView(APIView):
+    """
+    List all custom field definitions or create a new one
+    """
+    def get(self, request):
+        fields = CustomFieldDefinition.objects.filter(is_active=True)
+        serializer = CustomFieldDefinitionSerializer(fields, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = CustomFieldDefinitionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class CustomFieldDefinitionDetailView(APIView):
+    """
+    Retrieve, update or delete a custom field definition
+    """
+    def get(self, request, pk):
+        try:
+            field = CustomFieldDefinition.objects.get(pk=pk)
+            serializer = CustomFieldDefinitionSerializer(field)
+            return Response(serializer.data)
+        except CustomFieldDefinition.DoesNotExist:
+            return Response(
+                {"error": "Custom field not found"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+    def put(self, request, pk):
+        try:
+            field = CustomFieldDefinition.objects.get(pk=pk)
+            serializer = CustomFieldDefinitionSerializer(field, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return Response(serializer.data)
+        except CustomFieldDefinition.DoesNotExist:
+            return Response(
+                {"error": "Custom field not found"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+    def delete(self, request, pk):
+        try:
+            field = CustomFieldDefinition.objects.get(pk=pk)
+            # Soft delete by setting is_active to False
+            field.is_active = False
+            field.save()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except CustomFieldDefinition.DoesNotExist:
+            return Response(
+                {"error": "Custom field not found"}, 
                 status=status.HTTP_404_NOT_FOUND
             )

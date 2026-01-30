@@ -70,6 +70,9 @@ class Employee(models.Model):
         blank=True
     )
 
+    # Custom fields stored as JSON
+    custom_fields = models.JSONField(default=dict, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -87,3 +90,58 @@ class Employee(models.Model):
 
     def __str__(self):
         return f"{self.employee_id} - {self.first_name} {self.last_name}"
+
+
+class CustomFieldDefinition(models.Model):
+    """
+    Defines custom fields that can be added to employees.
+    This allows different clients to have different field requirements.
+    """
+    FIELD_TYPES = [
+        ('text', 'Text'),
+        ('number', 'Number'),
+        ('date', 'Date'),
+        ('email', 'Email'),
+        ('phone', 'Phone'),
+        ('textarea', 'Text Area'),
+        ('select', 'Dropdown'),
+        ('checkbox', 'Checkbox'),
+    ]
+
+    field_name = models.CharField(max_length=100, help_text="Internal field name (no spaces)")
+    field_label = models.CharField(max_length=200, help_text="Display label for the field")
+    field_type = models.CharField(max_length=20, choices=FIELD_TYPES, default='text')
+    
+    # For select/dropdown fields - comma separated options
+    field_options = models.TextField(
+        blank=True,
+        help_text="For dropdown fields: comma-separated options (e.g., 'Option1,Option2,Option3')"
+    )
+    
+    is_required = models.BooleanField(default=False)
+    default_value = models.CharField(max_length=500, blank=True)
+    
+    # Help text shown to users
+    help_text = models.CharField(max_length=500, blank=True)
+    
+    # Display order
+    display_order = models.IntegerField(default=0)
+    
+    # Active/Inactive
+    is_active = models.BooleanField(default=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['display_order', 'field_label']
+        unique_together = ['field_name']
+
+    def __str__(self):
+        return f"{self.field_label} ({self.field_type})"
+    
+    def get_options_list(self):
+        """Returns field options as a list"""
+        if self.field_options:
+            return [opt.strip() for opt in self.field_options.split(',')]
+        return []
