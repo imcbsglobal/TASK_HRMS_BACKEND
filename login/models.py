@@ -32,6 +32,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     profile_image = models.ImageField(upload_to='profile_images/', blank=True, null=True)
     is_active     = models.BooleanField(default=True)
     is_staff      = models.BooleanField(default=False)
+    
+    # WARNING: This field stores plain-text passwords - ONLY for development!
+    # Remove this in production and use password reset functionality instead
+    plain_password = models.CharField(max_length=128, blank=True, default='')
 
     USERNAME_FIELD = 'username'
 

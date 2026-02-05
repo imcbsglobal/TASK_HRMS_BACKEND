@@ -14,7 +14,7 @@ class UserSerializer(serializers.ModelSerializer):
         model  = User
         fields = (
             'id', 'username', 'first_name', 'last_name',
-            'email', 'role', 'profile_image', 'is_active',
+            'email', 'role', 'profile_image', 'is_active', 'plain_password',
         )
 
     def get_profile_image(self, obj):
@@ -33,10 +33,15 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model  = User
-        fields = ['id', 'username', 'password', 'first_name', 'last_name', 'email', 'role', 'profile_image']
+        fields = ['id', 'username', 'password', 'first_name', 'last_name', 'email', 'role', 'profile_image', 'is_active']
 
     def create(self, validated_data):
-        return User.objects.create_user(**validated_data)
+        # Store the plain password before hashing (for development only)
+        plain_pwd = validated_data.get('password', '')
+        user = User.objects.create_user(**validated_data)
+        user.plain_password = plain_pwd  # Store plain text password
+        user.save()
+        return user
 
 
 # ---------------------------------------------------------------------------
@@ -46,19 +51,27 @@ class UserUpdateSerializer(serializers.ModelSerializer):
     """
     All fields are optional so that a partial (PATCH) update works.
     profile_image accepts a new file upload OR the string "remove" to clear it.
+    password is optional - only updated if provided.
     """
     profile_image = serializers.CharField(required=False, allow_null=True)
+    password = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     class Meta:
         model  = User
-        fields = ['first_name', 'last_name', 'email', 'role', 'is_active', 'profile_image']
+        fields = ['username', 'password', 'first_name', 'last_name', 'email', 'role', 'is_active', 'profile_image']
 
     def update(self, instance, validated_data):
         image_value = validated_data.pop('profile_image', 'NOT_PROVIDED')
+        password = validated_data.pop('password', None)
 
         # Update simple fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
+
+        # Update password if provided
+        if password:
+            instance.set_password(password)
+            instance.plain_password = password  # Store plain text password (development only)
 
         # Handle profile_image separately
         if image_value == 'NOT_PROVIDED':
