@@ -24,6 +24,7 @@ urlpatterns = [
     path('api/', include('login.urls')),   # endpoints: /api/login/, /api/profile/, /api/token/refresh/
     path("api/HR/", include("HR.urls")),
     path("api/employee/", include("employee_management.urls")),
+    path("api/", include("access_control.urls")),
 ]
 
 if settings.DEBUG:

@@ -41,7 +41,8 @@ INSTALLED_APPS = [
     'rest_framework',
     'login',
     'HR', 
-    'employee_management'
+    'employee_management',
+    'access_control'
 ]
 
 MIDDLEWARE = [

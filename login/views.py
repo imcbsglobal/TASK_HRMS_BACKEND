@@ -17,7 +17,7 @@ User = get_user_model()
 
 
 # ---------------------------------------------------------------------------
-# Login  –  POST /api/login/
+# Login – POST /api/login/
 # ---------------------------------------------------------------------------
 class LoginView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -29,16 +29,20 @@ class LoginView(APIView):
 
         refresh = RefreshToken.for_user(user)
 
+        # FIXED: Return role in lowercase with underscore for frontend consistency
+        # Convert SUPER_ADMIN -> super_admin, ADMIN -> admin, USER -> user
+        normalized_role = user.role.lower()
+
         return Response({
             "access":   str(refresh.access_token),
             "refresh":  str(refresh),
-            "role":     user.role,
+            "role":     normalized_role,  # Send normalized role
             "username": user.username,
         })
 
 
 # ---------------------------------------------------------------------------
-# Profile  –  GET /api/profile/
+# Profile – GET /api/profile/
 # ---------------------------------------------------------------------------
 class ProfileAPIView(APIView):
     permission_classes = [IsAuthenticated]
@@ -49,7 +53,7 @@ class ProfileAPIView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# Logout  –  POST /api/logout/
+# Logout – POST /api/logout/
 # ---------------------------------------------------------------------------
 class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
@@ -66,7 +70,7 @@ class LogoutView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# User List  –  GET /api/users/
+# User List – GET /api/users/
 # ---------------------------------------------------------------------------
 class UserListView(APIView):
     permission_classes = [IsAuthenticated]
@@ -78,7 +82,7 @@ class UserListView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# User Create  –  POST /api/users/create/
+# User Create – POST /api/users/create/
 # ---------------------------------------------------------------------------
 class UserCreateView(APIView):
     permission_classes = [IsAuthenticated]
@@ -92,7 +96,7 @@ class UserCreateView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# User Update  –  PATCH /api/users/<pk>/update/
+# User Update – PATCH /api/users/<pk>/update/
 # ---------------------------------------------------------------------------
 class UserUpdateView(APIView):
     permission_classes = [IsAuthenticated]
@@ -134,7 +138,7 @@ class UserUpdateView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# User Delete  –  DELETE /api/users/<pk>/delete/
+# User Delete – DELETE /api/users/<pk>/delete/
 # ---------------------------------------------------------------------------
 class UserDeleteView(APIView):
     permission_classes = [IsAuthenticated]
