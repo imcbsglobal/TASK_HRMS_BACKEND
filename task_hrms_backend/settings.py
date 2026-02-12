@@ -42,7 +42,8 @@ INSTALLED_APPS = [
     'login',
     'HR', 
     'employee_management',
-    'access_control'
+    'access_control',
+    'master'
 ]
 
 MIDDLEWARE = [

@@ -91,6 +91,13 @@ class Command(BaseCommand):
                         'route': '/master/department',
                         'order': 1
                     },
+                    {
+                        'name': 'Leave Type',
+                        'slug': 'leave-type',
+                        'icon': '📋',
+                        'route': '/master/leave-type',
+                        'order': 2
+                    },
                 ]
             },
         ]
@@ -144,3 +151,4 @@ class Command(BaseCommand):
         self.stdout.write('  • /user-management/user-list')
         self.stdout.write('  • /user-management/user-control')
         self.stdout.write('  • /master/department')
+        self.stdout.write('  • /master/leave-type')
