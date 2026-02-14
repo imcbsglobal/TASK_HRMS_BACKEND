@@ -25,7 +25,8 @@ urlpatterns = [
     path("api/HR/", include("HR.urls")),
     path("api/employee/", include("employee_management.urls")),
     path("api/", include("access_control.urls")),
-    path("api/master/", include("master.urls")), 
+    path("api/master/", include("master.urls")),
+    path("api/attendance/", include("attendance.urls")),  # Attendance endpoints
 ]
 
 if settings.DEBUG:

@@ -50,9 +50,24 @@ class Command(BaseCommand):
                 'name': 'Attendance',
                 'slug': 'attendance',
                 'icon': '⏰',
-                'route': '/attendance',
+                'route': None,  # Parent menu has no route, only children do
                 'order': 5,
-                'children': []
+                'children': [
+                    {
+                        'name': 'Admin View',
+                        'slug': 'attendance-admin',
+                        'icon': '👨‍💼',
+                        'route': '/attendance/admin',
+                        'order': 1
+                    },
+                    {
+                        'name': 'My Attendance',
+                        'slug': 'attendance-user',
+                        'icon': '👤',
+                        'route': '/attendance/user',
+                        'order': 2
+                    },
+                ]
             },
             {
                 'name': 'User Management',
@@ -147,7 +162,8 @@ class Command(BaseCommand):
         self.stdout.write('  • /employees')
         self.stdout.write('  • /interviews')
         self.stdout.write('  • /certificates')
-        self.stdout.write('  • /attendance')
+        self.stdout.write('  • /attendance/admin')
+        self.stdout.write('  • /attendance/user')
         self.stdout.write('  • /user-management/user-list')
         self.stdout.write('  • /user-management/user-control')
         self.stdout.write('  • /master/department')
