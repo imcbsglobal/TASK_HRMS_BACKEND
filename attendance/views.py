@@ -12,7 +12,8 @@ from .models import Attendance, AttendanceSettings
 from .serializers import (
     AttendanceSerializer, CheckInSerializer, CheckOutSerializer,
     MonthlyStatsSerializer, TodayAttendanceSerializer,
-    AttendanceSettingsSerializer, LateRequestSerializer, LateApprovalSerializer
+    AttendanceSettingsSerializer, LateRequestSerializer, LateApprovalSerializer,
+    VerifyAttendanceSerializer
 )
 
 
@@ -40,10 +41,82 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         serializer.save(user=request.user)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
     
+    def partial_update(self, request, *args, **kwargs):
+        """
+        Allow admin to PATCH status and notes.
+        If is_verified=True is included, stamp verified_by / verified_at.
+        """
+        instance = self.get_object()
+        allowed_fields = {'status', 'notes', 'is_verified'}
+        data = {k: v for k, v in request.data.items() if k in allowed_fields}
+
+        # If admin is setting/changing status, mark as verified
+        if 'status' in data or data.get('is_verified'):
+            data['is_verified'] = True
+
+        serializer = self.get_serializer(instance, data=data, partial=True)
+        serializer.is_valid(raise_exception=True)
+
+        # Manually stamp verified_by / verified_at when verifying
+        if data.get('is_verified'):
+            instance.is_verified = True
+            instance.verified_by = request.user
+            instance.verified_at = timezone.now()
+        if 'status' in data:
+            instance.status = data['status']
+        if 'notes' in data:
+            instance.notes = data['notes']
+        # Use save with update_fields to skip determine_status re-run
+        update_fields = ['updated_at']
+        if 'status' in data:
+            update_fields.append('status')
+        if 'notes' in data:
+            update_fields.append('notes')
+        if data.get('is_verified'):
+            update_fields += ['is_verified', 'verified_by', 'verified_at']
+        instance.save(update_fields=update_fields)
+
+        return Response(AttendanceSerializer(instance).data)
+
+    @action(detail=True, methods=['post'], url_path='verify')
+    def verify_attendance(self, request, pk=None):
+        """
+        Admin verifies attendance and optionally overrides the status.
+        POST /api/attendance/{id}/verify/
+        Body: { "status": "present"|"absent"|"half_day"|"late"|"leave", "notes": "..." }
+        """
+        # Permission check
+        user = request.user
+        is_admin = (
+            user.is_staff or user.is_superuser or
+            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+        )
+        if not is_admin:
+            return Response({'error': 'Only admins can verify attendance.'}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = VerifyAttendanceSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+
+        attendance = self.get_object()
+        attendance.status = serializer.validated_data['status']
+        attendance.is_verified = True
+        attendance.verified_by = request.user
+        attendance.verified_at = timezone.now()
+        if serializer.validated_data.get('notes'):
+            attendance.notes = serializer.validated_data['notes']
+
+        # Save only the specific fields (bypass auto determine_status)
+        attendance.save(update_fields=['status', 'is_verified', 'verified_by', 'verified_at', 'notes', 'updated_at'])
+
+        return Response({
+            'message': f'Attendance verified. Status set to "{attendance.get_status_display()}".',
+            'attendance': AttendanceSerializer(attendance).data
+        }, status=status.HTTP_200_OK)
+    
     @action(detail=False, methods=['post'], url_path='check-in')
     def check_in(self, request):
         """
-        Check in for the day - records current time
+        Check in for the day - records current time and location
         """
         serializer = CheckInSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
@@ -52,6 +125,11 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         today = timezone.now().date()
         current_time = timezone.now()
         
+        # Get location data from request
+        latitude = serializer.validated_data.get('latitude')
+        longitude = serializer.validated_data.get('longitude')
+        address = serializer.validated_data.get('address', '')
+        
         # Get or create attendance record for today
         attendance, created = Attendance.objects.get_or_create(
             user=user,
@@ -59,7 +137,10 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             defaults={
                 'check_in_time': current_time,
                 'notes': serializer.validated_data.get('notes', ''),
-                'status': 'present'  # Set as present when checking in
+                'status': 'present',  # Set as present when checking in
+                'check_in_latitude': latitude,
+                'check_in_longitude': longitude,
+                'check_in_address': address,
             }
         )
         
@@ -68,6 +149,9 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             if not attendance.check_in_time:
                 attendance.check_in_time = current_time
                 attendance.notes = serializer.validated_data.get('notes', '')
+                attendance.check_in_latitude = latitude
+                attendance.check_in_longitude = longitude
+                attendance.check_in_address = address
                 attendance.save()
             else:
                 return Response(
@@ -84,7 +168,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], url_path='check-out')
     def check_out(self, request):
         """
-        Check out for the day - records current time and calculates hours
+        Check out for the day - records current time, location and calculates hours
         """
         serializer = CheckOutSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
@@ -92,6 +176,11 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         user = request.user
         today = timezone.now().date()
         current_time = timezone.now()
+        
+        # Get location data from request
+        latitude = serializer.validated_data.get('latitude')
+        longitude = serializer.validated_data.get('longitude')
+        address = serializer.validated_data.get('address', '')
         
         try:
             attendance = Attendance.objects.get(user=user, date=today)
@@ -108,6 +197,9 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             )
         
         attendance.check_out_time = current_time
+        attendance.check_out_latitude = latitude
+        attendance.check_out_longitude = longitude
+        attendance.check_out_address = address
         if serializer.validated_data.get('notes'):
             attendance.notes = serializer.validated_data.get('notes')
         attendance.save()  # This will trigger calculate_hours and determine_status
@@ -154,6 +246,12 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 'date': attendance.date,
                 'late_request': attendance.late_request,
                 'late_request_status': attendance.late_request_status,
+                'check_in_latitude': float(attendance.check_in_latitude) if attendance.check_in_latitude else None,
+                'check_in_longitude': float(attendance.check_in_longitude) if attendance.check_in_longitude else None,
+                'check_in_address': attendance.check_in_address,
+                'check_out_latitude': float(attendance.check_out_latitude) if attendance.check_out_latitude else None,
+                'check_out_longitude': float(attendance.check_out_longitude) if attendance.check_out_longitude else None,
+                'check_out_address': attendance.check_out_address,
             }
         except Attendance.DoesNotExist:
             data = {
@@ -168,6 +266,12 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 'date': today,
                 'late_request': False,
                 'late_request_status': None,
+                'check_in_latitude': None,
+                'check_in_longitude': None,
+                'check_in_address': None,
+                'check_out_latitude': None,
+                'check_out_longitude': None,
+                'check_out_address': None,
             }
         
         # Don't use TodayAttendanceSerializer, return dict directly

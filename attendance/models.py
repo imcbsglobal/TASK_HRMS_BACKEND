@@ -9,6 +9,7 @@ class Attendance(models.Model):
         ('absent', 'Absent'),
         ('late', 'Late'),
         ('half_day', 'Half Day'),
+        ('leave', 'On Leave'),
     ]
     
     LATE_REQUEST_STATUS = [
@@ -24,6 +25,25 @@ class Attendance(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='absent')
     total_hours = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
     notes = models.TextField(blank=True, null=True)
+    
+    # Location tracking fields
+    check_in_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    check_in_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    check_in_address = models.TextField(blank=True, null=True)
+    
+    check_out_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    check_out_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    check_out_address = models.TextField(blank=True, null=True)
+    
+    # Admin verification fields
+    is_verified = models.BooleanField(default=False)
+    verified_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='verified_attendances'
+    )
+    verified_at = models.DateTimeField(null=True, blank=True)
     
     # Late request fields
     late_request = models.BooleanField(default=False)
@@ -54,6 +74,18 @@ class Attendance(models.Model):
     def __str__(self):
         return f"{self.user.username} - {self.date} - {self.status}"
     
+    def get_check_in_map_url(self):
+        """Generate Google Maps URL for check-in location"""
+        if self.check_in_latitude and self.check_in_longitude:
+            return f"https://www.google.com/maps?q={self.check_in_latitude},{self.check_in_longitude}"
+        return None
+    
+    def get_check_out_map_url(self):
+        """Generate Google Maps URL for check-out location"""
+        if self.check_out_latitude and self.check_out_longitude:
+            return f"https://www.google.com/maps?q={self.check_out_latitude},{self.check_out_longitude}"
+        return None
+    
     def calculate_hours(self):
         """Calculate total hours worked"""
         if self.check_in_time and self.check_out_time:
@@ -64,18 +96,21 @@ class Attendance(models.Model):
         return 0.00
     
     def determine_status(self):
-        """Determine attendance status - simplified version"""
-        # If late request is approved, mark as late
-        if self.late_request and self.late_request_status == 'approved':
-            self.status = 'late'
-        # If checked in, mark as present
-        elif self.check_in_time:
-            # Check for half day based on total hours
-            if self.check_out_time and self.total_hours > 0 and self.total_hours < 4:
-                self.status = 'half_day'
-            else:
+        """
+        Determine attendance status.
+        If admin has already verified/set a status, preserve it.
+        Otherwise derive from check-in/check-out.
+        """
+        # Don't auto-override if admin has verified this record
+        if self.is_verified:
+            return
+
+        # If checked in only → half_day; checked in + out → present
+        if self.check_in_time:
+            if self.check_out_time:
                 self.status = 'present'
-        # Otherwise absent
+            else:
+                self.status = 'half_day'
         else:
             self.status = 'absent'
     

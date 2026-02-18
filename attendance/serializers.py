@@ -23,6 +23,9 @@ class AttendanceSerializer(serializers.ModelSerializer):
     check_out_time_formatted = serializers.SerializerMethodField()
     date_formatted = serializers.SerializerMethodField()
     late_approved_by_name = serializers.CharField(source='late_approved_by.get_full_name', read_only=True, allow_null=True)
+    verified_by_name = serializers.CharField(source='verified_by.get_full_name', read_only=True, allow_null=True)
+    check_in_map_url = serializers.SerializerMethodField()
+    check_out_map_url = serializers.SerializerMethodField()
     
     class Meta:
         model = Attendance
@@ -31,12 +34,16 @@ class AttendanceSerializer(serializers.ModelSerializer):
             'check_in_time', 'check_in_time_formatted', 
             'check_out_time', 'check_out_time_formatted',
             'status', 'total_hours', 'notes', 
+            'is_verified', 'verified_by', 'verified_by_name', 'verified_at',
             'late_request', 'late_request_reason', 'late_request_status',
             'late_approved_by', 'late_approved_by_name', 'late_approved_at',
+            'check_in_latitude', 'check_in_longitude', 'check_in_address', 'check_in_map_url',
+            'check_out_latitude', 'check_out_longitude', 'check_out_address', 'check_out_map_url',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['total_hours', 'status', 'created_at', 'updated_at', 
-                           'late_approved_by', 'late_approved_at']
+        read_only_fields = ['total_hours', 'created_at', 'updated_at', 
+                           'late_approved_by', 'late_approved_at',
+                           'verified_by', 'verified_at']
     
     def get_check_in_time_formatted(self, obj):
         """Convert UTC time to IST and format for display"""
@@ -58,11 +65,22 @@ class AttendanceSerializer(serializers.ModelSerializer):
     
     def get_date_formatted(self, obj):
         return obj.date.strftime('%Y-%m-%d')
+    
+    def get_check_in_map_url(self, obj):
+        """Get Google Maps URL for check-in location"""
+        return obj.get_check_in_map_url()
+    
+    def get_check_out_map_url(self, obj):
+        """Get Google Maps URL for check-out location"""
+        return obj.get_check_out_map_url()
 
 
 class CheckInSerializer(serializers.Serializer):
     """Serializer for check-in action"""
-    notes = serializers.CharField(required=False, allow_blank=True)
+    notes = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    latitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True)
+    longitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True)
+    address = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     
     def validate(self, data):
         user = self.context['request'].user
@@ -78,7 +96,10 @@ class CheckInSerializer(serializers.Serializer):
 
 class CheckOutSerializer(serializers.Serializer):
     """Serializer for check-out action"""
-    notes = serializers.CharField(required=False, allow_blank=True)
+    notes = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    latitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True)
+    longitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True)
+    address = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     
     def validate(self, data):
         user = self.context['request'].user
@@ -136,12 +157,30 @@ class LateApprovalSerializer(serializers.Serializer):
         return data
 
 
+class VerifyAttendanceSerializer(serializers.Serializer):
+    """Serializer for admin verifying/overriding attendance status"""
+    STATUS_CHOICES = ['present', 'absent', 'half_day', 'late', 'leave']
+    
+    status = serializers.ChoiceField(choices=STATUS_CHOICES)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, data):
+        user = self.context['request'].user
+        if not (user.is_staff or user.is_superuser):
+            # Also accept custom role fields
+            role = getattr(user, 'role', None)
+            if role not in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']:
+                raise serializers.ValidationError("Only admins can verify attendance records.")
+        return data
+
+
 class MonthlyStatsSerializer(serializers.Serializer):
     """Serializer for monthly attendance statistics"""
     present = serializers.IntegerField()
     absent = serializers.IntegerField()
     late = serializers.IntegerField()
     half_day = serializers.IntegerField()
+    leave = serializers.IntegerField()
     total_days = serializers.IntegerField()
     total_hours = serializers.DecimalField(max_digits=6, decimal_places=2)
     average_hours = serializers.DecimalField(max_digits=5, decimal_places=2)
@@ -158,6 +197,14 @@ class TodayAttendanceSerializer(serializers.Serializer):
     date = serializers.DateField()
     late_request = serializers.BooleanField()
     late_request_status = serializers.CharField(allow_null=True)
+    
+    # Location fields
+    check_in_latitude = serializers.DecimalField(max_digits=9, decimal_places=6, allow_null=True)
+    check_in_longitude = serializers.DecimalField(max_digits=9, decimal_places=6, allow_null=True)
+    check_in_address = serializers.CharField(allow_null=True)
+    check_out_latitude = serializers.DecimalField(max_digits=9, decimal_places=6, allow_null=True)
+    check_out_longitude = serializers.DecimalField(max_digits=9, decimal_places=6, allow_null=True)
+    check_out_address = serializers.CharField(allow_null=True)
     
     # Add formatted time fields
     check_in_time_formatted = serializers.SerializerMethodField()
