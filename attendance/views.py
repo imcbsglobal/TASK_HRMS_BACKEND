@@ -8,13 +8,15 @@ from datetime import datetime, timedelta
 from calendar import monthrange
 import pytz
 
-from .models import Attendance, AttendanceSettings, LeaveRequest
+from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest
 from .serializers import (
     AttendanceSerializer, CheckInSerializer, CheckOutSerializer,
     MonthlyStatsSerializer, TodayAttendanceSerializer,
     AttendanceSettingsSerializer, LateRequestSerializer, LateApprovalSerializer,
     VerifyAttendanceSerializer, LeaveRequestSerializer, CreateLeaveRequestSerializer,
-    LeaveApprovalSerializer
+    LeaveApprovalSerializer,
+    LateArrivalRequestSerializer, CreateLateArrivalRequestSerializer,
+    LateArrivalApprovalSerializer,
 )
 
 
@@ -225,7 +227,6 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         request_date = serializer.validated_data.get('request_date')
         reason = serializer.validated_data.get('reason')
         
-        # Get or create attendance record for the requested date
         attendance, created = Attendance.objects.get_or_create(
             user=user,
             date=request_date,
@@ -340,9 +341,191 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# LATE ARRIVAL REQUEST VIEWSET
+# ─────────────────────────────────────────────────────────────────────────────
+
+class LateArrivalRequestViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for LateArrivalRequest.
+
+    Users:
+      POST   /late-arrival-requests/              – create a request
+      GET    /late-arrival-requests/my-requests/  – list own requests
+      DELETE /late-arrival-requests/{id}/         – cancel own pending request
+
+    Admins:
+      GET    /late-arrival-requests/              – list all (filter ?status=pending)
+      GET    /late-arrival-requests/pending/      – pending only
+      GET    /late-arrival-requests/stats/        – stats
+      POST   /late-arrival-requests/{id}/review/  – approve or reject
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _is_admin(self, user):
+        return (
+            user.is_staff or user.is_superuser or
+            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+        )
+
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return CreateLateArrivalRequestSerializer
+        if self.action == 'review':
+            return LateArrivalApprovalSerializer
+        return LateArrivalRequestSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = LateArrivalRequest.objects.select_related('user', 'reviewed_by')
+
+        if self._is_admin(user):
+            status_filter = self.request.query_params.get('status')
+            user_filter   = self.request.query_params.get('user_id')
+            if status_filter:
+                qs = qs.filter(status=status_filter)
+            if user_filter:
+                qs = qs.filter(user_id=user_filter)
+            return qs
+
+        # Regular users see only their own requests
+        return qs.filter(user=user)
+
+    def create(self, request, *args, **kwargs):
+        """User submits a late arrival request."""
+        serializer = CreateLateArrivalRequestSerializer(
+            data=request.data, context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        instance = serializer.save(user=request.user)
+        return Response(
+            LateArrivalRequestSerializer(instance).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        """Users can cancel their own pending requests."""
+        instance = self.get_object()
+        if instance.user != request.user and not self._is_admin(request.user):
+            return Response(
+                {'error': 'You cannot cancel this request.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if instance.status != 'pending':
+            return Response(
+                {'error': 'Only pending requests can be cancelled.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        instance.status = 'cancelled'
+        instance.save(update_fields=['status', 'updated_at'])
+        return Response({'message': 'Late arrival request cancelled.'}, status=status.HTTP_200_OK)
+
+    # ── Custom actions ──────────────────────────────────────────────────────
+
+    @action(detail=False, methods=['get'], url_path='my-requests')
+    def my_requests(self, request):
+        """Current user's own late arrival requests."""
+        qs = LateArrivalRequest.objects.filter(user=request.user).order_by('-created_at')
+        return Response(LateArrivalRequestSerializer(qs, many=True).data)
+
+    @action(detail=False, methods=['get'], url_path='pending')
+    def pending_requests(self, request):
+        """Admin-only: all pending late arrival requests."""
+        if not self._is_admin(request.user):
+            return Response(
+                {'error': 'Only admins can view all pending requests.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        qs = LateArrivalRequest.objects.filter(status='pending').select_related('user').order_by('-created_at')
+        return Response(LateArrivalRequestSerializer(qs, many=True).data)
+
+    @action(detail=False, methods=['get'], url_path='stats')
+    def stats(self, request):
+        """Admin-only: counts by status."""
+        if not self._is_admin(request.user):
+            return Response({'error': 'Admins only.'}, status=status.HTTP_403_FORBIDDEN)
+
+        return Response({
+            'total':    LateArrivalRequest.objects.count(),
+            'pending':  LateArrivalRequest.objects.filter(status='pending').count(),
+            'approved': LateArrivalRequest.objects.filter(status='approved').count(),
+            'rejected': LateArrivalRequest.objects.filter(status='rejected').count(),
+            'cancelled':LateArrivalRequest.objects.filter(status='cancelled').count(),
+        })
+
+    @action(detail=True, methods=['post'], url_path='review')
+    def review(self, request, pk=None):
+        """
+        Admin approves or rejects a late arrival request.
+        On approval the corresponding Attendance record is marked 'late' + verified.
+
+        Body: { "action": "approve"|"reject", "admin_notes": "..." }
+        """
+        if not self._is_admin(request.user):
+            return Response(
+                {'error': 'Only admins can review late arrival requests.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = LateArrivalApprovalSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+
+        late_req = self.get_object()
+
+        if late_req.status != 'pending':
+            return Response(
+                {'error': f'Cannot review a request that is already "{late_req.status}".'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        action_type = serializer.validated_data['action']
+        admin_notes = serializer.validated_data.get('admin_notes', '')
+
+        if action_type == 'approve':
+            late_req.status = 'approved'
+            message = 'Late arrival request approved successfully.'
+
+            # Mark the corresponding Attendance record as 'late' and verified
+            attendance, _ = Attendance.objects.get_or_create(
+                user=late_req.user,
+                date=late_req.date,
+                defaults={
+                    'status': 'late',
+                    'notes': f'Late arrival approved – {late_req.reason}',
+                    'is_verified': True,
+                    'verified_by': request.user,
+                    'verified_at': timezone.now(),
+                },
+            )
+            # Update existing record if it wasn't just created
+            if not attendance.is_verified:
+                attendance.status = 'late'
+                attendance.notes = f'Late arrival approved – {late_req.reason}'
+                attendance.is_verified = True
+                attendance.verified_by = request.user
+                attendance.verified_at = timezone.now()
+                attendance.save(update_fields=[
+                    'status', 'notes', 'is_verified',
+                    'verified_by', 'verified_at', 'updated_at',
+                ])
+        else:
+            late_req.status = 'rejected'
+            message = 'Late arrival request rejected.'
+
+        late_req.reviewed_by  = request.user
+        late_req.reviewed_at  = timezone.now()
+        late_req.admin_notes  = admin_notes
+        late_req.save()
+
+        return Response({
+            'message': message,
+            'late_arrival_request': LateArrivalRequestSerializer(late_req).data,
+        }, status=status.HTTP_200_OK)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # LEAVE REQUEST VIEWSET
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class LeaveRequestViewSet(viewsets.ModelViewSet):
     """
@@ -368,7 +551,6 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         qs = LeaveRequest.objects.select_related('user', 'reviewed_by')
         
         if is_admin:
-            # Admins can filter by status, user
             status_filter = self.request.query_params.get('status')
             user_filter = self.request.query_params.get('user_id')
             if status_filter:
@@ -377,7 +559,6 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(user_id=user_filter)
             return qs
         
-        # Regular users see only their own requests
         return qs.filter(user=user)
     
     def create(self, request, *args, **kwargs):
@@ -403,11 +584,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'], url_path='review')
     def review_leave(self, request, pk=None):
-        """
-        Admin approves or rejects a leave request.
-        POST /api/leave-requests/{id}/review/
-        Body: {"action": "approve"|"reject", "admin_notes": "optional"}
-        """
+        """Admin approves or rejects a leave request."""
         user = request.user
         is_admin = (
             user.is_staff or user.is_superuser or
@@ -434,10 +611,8 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             leave_request.status = 'approved'
             message = 'Leave request approved successfully.'
             
-            # Auto-create/update Attendance records for the approved leave period
             current_date = leave_request.start_date
             while current_date <= leave_request.end_date:
-                # Skip weekends
                 if current_date.weekday() < 5:
                     attendance, created = Attendance.objects.get_or_create(
                         user=leave_request.user,
@@ -451,7 +626,6 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
                         }
                     )
                     if not created and not attendance.check_in_time:
-                        # Only update if employee hasn't checked in
                         attendance.status = 'leave'
                         attendance.notes = f'Approved leave: {leave_request.get_leave_type_display()}'
                         attendance.is_verified = True

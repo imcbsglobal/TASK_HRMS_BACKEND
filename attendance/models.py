@@ -45,7 +45,7 @@ class Attendance(models.Model):
     )
     verified_at = models.DateTimeField(null=True, blank=True)
     
-    # Late request fields
+    # Late request fields (legacy – kept for backward compat)
     late_request = models.BooleanField(default=False)
     late_request_reason = models.TextField(blank=True, null=True)
     late_request_status = models.CharField(
@@ -108,6 +108,59 @@ class Attendance(models.Model):
             self.calculate_hours()
         self.determine_status()
         super().save(*args, **kwargs)
+
+
+class LateArrivalRequest(models.Model):
+    """
+    Standalone late-arrival request.
+    Users submit a date, expected arrival time and a reason.
+    Admins approve or reject, which marks the attendance record as 'late' + verified.
+    """
+
+    STATUS_CHOICES = [
+        ('pending',  'Pending'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+        ('cancelled','Cancelled'),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='late_arrival_requests',
+    )
+    date = models.DateField()
+    expected_arrival_time = models.TimeField(
+        help_text="Expected / actual late arrival time (HH:MM)"
+    )
+    reason = models.TextField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+
+    # Admin action
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='reviewed_late_arrivals',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    admin_notes = models.TextField(blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Late Arrival Request'
+        verbose_name_plural = 'Late Arrival Requests'
+        # One pending/approved request per user per date
+        unique_together = ['user', 'date']
+
+    def __str__(self):
+        return (
+            f"{self.user.username} – {self.date} "
+            f"@ {self.expected_arrival_time} ({self.status})"
+        )
 
 
 class LeaveRequest(models.Model):

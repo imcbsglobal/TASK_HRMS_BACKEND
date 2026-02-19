@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Attendance, AttendanceSettings, LeaveRequest
+from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest
 from django.utils import timezone
 from datetime import datetime, timedelta
 import pytz
@@ -109,7 +109,6 @@ class LateRequestSerializer(serializers.Serializer):
         user = self.context['request'].user
         request_date = data.get('date', timezone.now().date())
         
-        # Check for duplicate/already-approved requests on existing records
         attendance = Attendance.objects.filter(user=user, date=request_date).first()
         if attendance:
             if attendance.late_request and attendance.late_request_status == 'pending':
@@ -144,9 +143,103 @@ class VerifyAttendanceSerializer(serializers.Serializer):
         return data
 
 
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# LATE ARRIVAL REQUEST SERIALIZERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class LateArrivalRequestSerializer(serializers.ModelSerializer):
+    """Full read serializer – used in list/detail views."""
+    user_name     = serializers.CharField(source='user.get_full_name', read_only=True)
+    user_username = serializers.CharField(source='user.username',      read_only=True)
+    reviewed_by_name = serializers.CharField(
+        source='reviewed_by.get_full_name', read_only=True, allow_null=True
+    )
+    date_formatted = serializers.SerializerMethodField()
+    arrival_time_formatted = serializers.SerializerMethodField()
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model  = LateArrivalRequest
+        fields = [
+            'id', 'user', 'user_name', 'user_username',
+            'date', 'date_formatted',
+            'expected_arrival_time', 'arrival_time_formatted',
+            'reason', 'status', 'status_display',
+            'reviewed_by', 'reviewed_by_name', 'reviewed_at', 'admin_notes',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'user', 'status', 'reviewed_by', 'reviewed_at', 'created_at', 'updated_at',
+        ]
+
+    def get_date_formatted(self, obj):
+        return obj.date.strftime('%d %b %Y') if obj.date else None
+
+    def get_arrival_time_formatted(self, obj):
+        if obj.expected_arrival_time:
+            # Convert time to 12-hour format
+            t = obj.expected_arrival_time
+            hour = t.hour
+            minute = t.minute
+            am_pm = 'AM' if hour < 12 else 'PM'
+            hour_12 = hour % 12 or 12
+            return f"{hour_12:02d}:{minute:02d} {am_pm}"
+        return None
+
+
+class CreateLateArrivalRequestSerializer(serializers.ModelSerializer):
+    """Serializer for creating a new late arrival request."""
+
+    class Meta:
+        model  = LateArrivalRequest
+        fields = ['date', 'expected_arrival_time', 'reason']
+
+    def validate_date(self, value):
+        # Allow past dates (retroactive), today, or near-future dates
+        return value
+
+    def validate(self, data):
+        user = self.context['request'].user
+        date = data.get('date')
+
+        # Check for an existing request on the same date
+        existing = LateArrivalRequest.objects.filter(user=user, date=date).first()
+        if existing:
+            if existing.status == 'pending':
+                raise serializers.ValidationError(
+                    "You already have a pending late arrival request for this date."
+                )
+            if existing.status == 'approved':
+                raise serializers.ValidationError(
+                    "A late arrival request for this date has already been approved."
+                )
+            # If cancelled/rejected, allow re-submission by deleting old record
+            existing.delete()
+
+        return data
+
+
+class LateArrivalApprovalSerializer(serializers.Serializer):
+    """Admin approves or rejects a late arrival request."""
+    action      = serializers.ChoiceField(choices=['approve', 'reject'])
+    admin_notes = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, data):
+        user = self.context['request'].user
+        is_admin = (
+            user.is_staff or user.is_superuser or
+            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+        )
+        if not is_admin:
+            raise serializers.ValidationError(
+                "Only admins can approve/reject late arrival requests."
+            )
+        return data
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # LEAVE REQUEST SERIALIZERS
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class LeaveRequestSerializer(serializers.ModelSerializer):
     """Full serializer for LeaveRequest - used for list/detail views"""
@@ -194,7 +287,6 @@ class CreateLeaveRequestSerializer(serializers.ModelSerializer):
             if end_date < start_date:
                 raise serializers.ValidationError("End date cannot be before start date.")
         
-        # Check for overlapping leave requests
         user = self.context['request'].user
         if start_date and end_date:
             overlapping = LeaveRequest.objects.filter(
