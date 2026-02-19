@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Attendance, AttendanceSettings
+from .models import Attendance, AttendanceSettings, LeaveRequest
 from django.utils import timezone
 from datetime import datetime, timedelta
 import pytz
@@ -9,14 +9,12 @@ User = get_user_model()
 
 
 class UserSerializer(serializers.ModelSerializer):
-    """Serializer for User model"""
     class Meta:
         model = User
         fields = ['id', 'username', 'email', 'first_name', 'last_name']
 
 
 class AttendanceSerializer(serializers.ModelSerializer):
-    """Serializer for Attendance model"""
     user_name = serializers.CharField(source='user.get_full_name', read_only=True)
     user_username = serializers.CharField(source='user.username', read_only=True)
     check_in_time_formatted = serializers.SerializerMethodField()
@@ -46,18 +44,14 @@ class AttendanceSerializer(serializers.ModelSerializer):
                            'verified_by', 'verified_at']
     
     def get_check_in_time_formatted(self, obj):
-        """Convert UTC time to IST and format for display"""
         if obj.check_in_time:
-            # Convert UTC to IST (Asia/Kolkata)
             ist = pytz.timezone('Asia/Kolkata')
             local_time = obj.check_in_time.astimezone(ist)
             return local_time.strftime('%I:%M %p')
         return None
     
     def get_check_out_time_formatted(self, obj):
-        """Convert UTC time to IST and format for display"""
         if obj.check_out_time:
-            # Convert UTC to IST (Asia/Kolkata)
             ist = pytz.timezone('Asia/Kolkata')
             local_time = obj.check_out_time.astimezone(ist)
             return local_time.strftime('%I:%M %p')
@@ -67,16 +61,13 @@ class AttendanceSerializer(serializers.ModelSerializer):
         return obj.date.strftime('%Y-%m-%d')
     
     def get_check_in_map_url(self, obj):
-        """Get Google Maps URL for check-in location"""
         return obj.get_check_in_map_url()
     
     def get_check_out_map_url(self, obj):
-        """Get Google Maps URL for check-out location"""
         return obj.get_check_out_map_url()
 
 
 class CheckInSerializer(serializers.Serializer):
-    """Serializer for check-in action"""
     notes = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     latitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True)
     longitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True)
@@ -85,17 +76,13 @@ class CheckInSerializer(serializers.Serializer):
     def validate(self, data):
         user = self.context['request'].user
         today = timezone.now().date()
-        
-        # Check if already checked in today
         existing = Attendance.objects.filter(user=user, date=today).first()
         if existing and existing.check_in_time:
             raise serializers.ValidationError("You have already checked in today.")
-        
         return data
 
 
 class CheckOutSerializer(serializers.Serializer):
-    """Serializer for check-out action"""
     notes = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     latitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True)
     longitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True)
@@ -104,23 +91,17 @@ class CheckOutSerializer(serializers.Serializer):
     def validate(self, data):
         user = self.context['request'].user
         today = timezone.now().date()
-        
-        # Check if attendance record exists
         attendance = Attendance.objects.filter(user=user, date=today).first()
         if not attendance:
             raise serializers.ValidationError("You haven't checked in yet.")
-        
         if not attendance.check_in_time:
             raise serializers.ValidationError("You haven't checked in yet.")
-        
         if attendance.check_out_time:
             raise serializers.ValidationError("You have already checked out today.")
-        
         return data
 
 
 class LateRequestSerializer(serializers.Serializer):
-    """Serializer for submitting late request"""
     reason = serializers.CharField(required=True, allow_blank=False)
     date = serializers.DateField(required=False)
     
@@ -128,54 +109,127 @@ class LateRequestSerializer(serializers.Serializer):
         user = self.context['request'].user
         request_date = data.get('date', timezone.now().date())
         
-        # Check if attendance record exists for that date
-        try:
-            attendance = Attendance.objects.get(user=user, date=request_date)
-        except Attendance.DoesNotExist:
-            raise serializers.ValidationError("No attendance record found for this date.")
-        
-        # Check if already has a late request
-        if attendance.late_request and attendance.late_request_status == 'pending':
-            raise serializers.ValidationError("You already have a pending late request for this date.")
-        
-        if attendance.late_request and attendance.late_request_status == 'approved':
-            raise serializers.ValidationError("Late request already approved for this date.")
+        # Check for duplicate/already-approved requests on existing records
+        attendance = Attendance.objects.filter(user=user, date=request_date).first()
+        if attendance:
+            if attendance.late_request and attendance.late_request_status == 'pending':
+                raise serializers.ValidationError("You already have a pending late request for this date.")
+            if attendance.late_request and attendance.late_request_status == 'approved':
+                raise serializers.ValidationError("Late request already approved for this date.")
         
         data['request_date'] = request_date
         return data
 
 
 class LateApprovalSerializer(serializers.Serializer):
-    """Serializer for approving/rejecting late requests"""
     action = serializers.ChoiceField(choices=['approve', 'reject'])
     
     def validate(self, data):
-        # Ensure the user is admin
         if not self.context['request'].user.is_staff:
             raise serializers.ValidationError("Only admins can approve/reject late requests.")
-        
         return data
 
 
 class VerifyAttendanceSerializer(serializers.Serializer):
-    """Serializer for admin verifying/overriding attendance status"""
     STATUS_CHOICES = ['present', 'absent', 'half_day', 'late', 'leave']
-    
     status = serializers.ChoiceField(choices=STATUS_CHOICES)
     notes = serializers.CharField(required=False, allow_blank=True)
 
     def validate(self, data):
         user = self.context['request'].user
         if not (user.is_staff or user.is_superuser):
-            # Also accept custom role fields
             role = getattr(user, 'role', None)
             if role not in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']:
                 raise serializers.ValidationError("Only admins can verify attendance records.")
         return data
 
 
+# ─────────────────────────────────────────────────────────────
+# LEAVE REQUEST SERIALIZERS
+# ─────────────────────────────────────────────────────────────
+
+class LeaveRequestSerializer(serializers.ModelSerializer):
+    """Full serializer for LeaveRequest - used for list/detail views"""
+    user_name = serializers.CharField(source='user.get_full_name', read_only=True)
+    user_username = serializers.CharField(source='user.username', read_only=True)
+    reviewed_by_name = serializers.CharField(source='reviewed_by.get_full_name', read_only=True, allow_null=True)
+    total_days = serializers.ReadOnlyField()
+    leave_type_display = serializers.CharField(source='get_leave_type_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    start_date_formatted = serializers.SerializerMethodField()
+    end_date_formatted = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = LeaveRequest
+        fields = [
+            'id', 'user', 'user_name', 'user_username',
+            'leave_type', 'leave_type_display',
+            'start_date', 'start_date_formatted',
+            'end_date', 'end_date_formatted',
+            'reason', 'status', 'status_display',
+            'total_days',
+            'reviewed_by', 'reviewed_by_name', 'reviewed_at', 'admin_notes',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['user', 'status', 'reviewed_by', 'reviewed_at', 'created_at', 'updated_at']
+    
+    def get_start_date_formatted(self, obj):
+        return obj.start_date.strftime('%d %b %Y') if obj.start_date else None
+    
+    def get_end_date_formatted(self, obj):
+        return obj.end_date.strftime('%d %b %Y') if obj.end_date else None
+
+
+class CreateLeaveRequestSerializer(serializers.ModelSerializer):
+    """Serializer for creating a new leave request"""
+    class Meta:
+        model = LeaveRequest
+        fields = ['leave_type', 'start_date', 'end_date', 'reason']
+    
+    def validate(self, data):
+        start_date = data.get('start_date')
+        end_date = data.get('end_date')
+        
+        if start_date and end_date:
+            if end_date < start_date:
+                raise serializers.ValidationError("End date cannot be before start date.")
+        
+        # Check for overlapping leave requests
+        user = self.context['request'].user
+        if start_date and end_date:
+            overlapping = LeaveRequest.objects.filter(
+                user=user,
+                status__in=['pending', 'approved'],
+                start_date__lte=end_date,
+                end_date__gte=start_date
+            )
+            if self.instance:
+                overlapping = overlapping.exclude(pk=self.instance.pk)
+            if overlapping.exists():
+                raise serializers.ValidationError(
+                    "You already have a leave request for this date range."
+                )
+        
+        return data
+
+
+class LeaveApprovalSerializer(serializers.Serializer):
+    """Serializer for admin approving/rejecting leave requests"""
+    action = serializers.ChoiceField(choices=['approve', 'reject'])
+    admin_notes = serializers.CharField(required=False, allow_blank=True)
+    
+    def validate(self, data):
+        user = self.context['request'].user
+        is_admin = (
+            user.is_staff or user.is_superuser or
+            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+        )
+        if not is_admin:
+            raise serializers.ValidationError("Only admins can approve/reject leave requests.")
+        return data
+
+
 class MonthlyStatsSerializer(serializers.Serializer):
-    """Serializer for monthly attendance statistics"""
     present = serializers.IntegerField()
     absent = serializers.IntegerField()
     late = serializers.IntegerField()
@@ -187,7 +241,6 @@ class MonthlyStatsSerializer(serializers.Serializer):
 
 
 class TodayAttendanceSerializer(serializers.Serializer):
-    """Serializer for today's attendance status"""
     has_checked_in = serializers.BooleanField()
     has_checked_out = serializers.BooleanField()
     check_in_time = serializers.DateTimeField(allow_null=True)
@@ -197,44 +250,33 @@ class TodayAttendanceSerializer(serializers.Serializer):
     date = serializers.DateField()
     late_request = serializers.BooleanField()
     late_request_status = serializers.CharField(allow_null=True)
-    
-    # Location fields
     check_in_latitude = serializers.DecimalField(max_digits=9, decimal_places=6, allow_null=True)
     check_in_longitude = serializers.DecimalField(max_digits=9, decimal_places=6, allow_null=True)
     check_in_address = serializers.CharField(allow_null=True)
     check_out_latitude = serializers.DecimalField(max_digits=9, decimal_places=6, allow_null=True)
     check_out_longitude = serializers.DecimalField(max_digits=9, decimal_places=6, allow_null=True)
     check_out_address = serializers.CharField(allow_null=True)
-    
-    # Add formatted time fields
     check_in_time_formatted = serializers.SerializerMethodField()
     check_out_time_formatted = serializers.SerializerMethodField()
     
     def get_check_in_time_formatted(self, obj):
-        """Convert UTC time to IST and format for display"""
         check_in = obj.get('check_in_time')
-        if check_in:
-            # If it's already a datetime object
-            if isinstance(check_in, datetime):
-                ist = pytz.timezone('Asia/Kolkata')
-                local_time = check_in.astimezone(ist)
-                return local_time.strftime('%I:%M %p')
+        if check_in and isinstance(check_in, datetime):
+            ist = pytz.timezone('Asia/Kolkata')
+            local_time = check_in.astimezone(ist)
+            return local_time.strftime('%I:%M %p')
         return None
     
     def get_check_out_time_formatted(self, obj):
-        """Convert UTC time to IST and format for display"""
         check_out = obj.get('check_out_time')
-        if check_out:
-            # If it's already a datetime object
-            if isinstance(check_out, datetime):
-                ist = pytz.timezone('Asia/Kolkata')
-                local_time = check_out.astimezone(ist)
-                return local_time.strftime('%I:%M %p')
+        if check_out and isinstance(check_out, datetime):
+            ist = pytz.timezone('Asia/Kolkata')
+            local_time = check_out.astimezone(ist)
+            return local_time.strftime('%I:%M %p')
         return None
 
 
 class AttendanceSettingsSerializer(serializers.ModelSerializer):
-    """Serializer for Attendance Settings"""
     class Meta:
         model = AttendanceSettings
         fields = [
