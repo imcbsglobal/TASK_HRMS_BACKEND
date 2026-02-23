@@ -1,267 +1,319 @@
 from io import BytesIO
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import cm
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
+from reportlab.lib.units import cm, mm
+from reportlab.pdfgen import canvas
+from reportlab.platypus import Paragraph
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 
+# ── Palette ──────────────────────────────────────────────────────────────────
+NAVY       = colors.HexColor("#0D1B2A")   # deep navy – headers / accents
+GOLD       = colors.HexColor("#C9A84C")   # warm gold – decorative rule
+SLATE      = colors.HexColor("#2C3E50")   # section titles
+BODY_TEXT  = colors.HexColor("#3D3D3D")   # body paragraphs
+MUTED      = colors.HexColor("#7F8C8D")   # labels / meta text
+ROW_ALT    = colors.HexColor("#F4F6F8")   # alternating table rows
+ROW_WHITE  = colors.HexColor("#FFFFFF")
+DIVIDER    = colors.HexColor("#DDE2E8")   # subtle horizontal rules
+BG_SIDEBAR = colors.HexColor("#0D1B2A")   # left sidebar strip
+GOLD_LIGHT = colors.HexColor("#F5E6C8")   # sidebar accent band
+
+PAGE_W, PAGE_H = A4
+
+
+# ── Helper: draw text with automatic line wrapping via Paragraph ──────────────
+def draw_paragraph(c_obj, text, x, y, width, style):
+    p = Paragraph(text, style)
+    w, h = p.wrapOn(c_obj, width, 9999)
+    p.drawOn(c_obj, x, y - h)
+    return h   # consumed height
+
+
+# ── Background chrome ─────────────────────────────────────────────────────────
+def draw_chrome(c_obj):
+    """Draw the decorative page background elements."""
+
+    # Left navy sidebar strip (full height)
+    STRIP_W = 1.4 * cm
+    c_obj.setFillColor(BG_SIDEBAR)
+    c_obj.rect(0, 0, STRIP_W, PAGE_H, fill=1, stroke=0)
+
+    # Gold accent bar inside sidebar (top third)
+    c_obj.setFillColor(GOLD)
+    c_obj.rect(0, PAGE_H - 6 * cm, STRIP_W, 6 * cm, fill=1, stroke=0)
+
+    # Bottom footer band
+    FOOTER_H = 1.5 * cm
+    c_obj.setFillColor(NAVY)
+    c_obj.rect(0, 0, PAGE_W, FOOTER_H, fill=1, stroke=0)
+
+    # Thin gold rule just above footer
+    c_obj.setStrokeColor(GOLD)
+    c_obj.setLineWidth(2)
+    c_obj.line(STRIP_W + 0.3 * cm, FOOTER_H + 1, PAGE_W - 0.8 * cm, FOOTER_H + 1)
+
+
+def draw_footer(c_obj, company_name, candidate_name):
+    c_obj.setFillColor(colors.white)
+    c_obj.setFont("Helvetica", 7.5)
+    footer_text = f"{company_name}  ·  Confidential  ·  Prepared for {candidate_name}"
+    c_obj.drawCentredString(PAGE_W / 2, 0.52 * cm, footer_text)
+
+
+# ── Section divider ───────────────────────────────────────────────────────────
+def draw_section_title(c_obj, title, y, left=2.2 * cm):
+    right = PAGE_W - 1.2 * cm
+    # Title text
+    c_obj.setFont("Helvetica-Bold", 9)
+    c_obj.setFillColor(NAVY)
+    c_obj.drawString(left, y, title.upper())
+
+    title_w = c_obj.stringWidth(title.upper(), "Helvetica-Bold", 9)
+
+    # Gold rule that runs from after title to right margin
+    gap = 6
+    c_obj.setStrokeColor(GOLD)
+    c_obj.setLineWidth(1.2)
+    c_obj.line(left + title_w + gap, y + 3, right, y + 3)
+
+    return y - 10   # return next y position
+
+
+# ── Details table ─────────────────────────────────────────────────────────────
+def draw_details_table(c_obj, rows, x, y, col1_w=4.5 * cm, col2_w=10.5 * cm, row_h=0.72 * cm):
+    """rows: list of (label, value) tuples"""
+    label_style = ParagraphStyle(
+        "TL", fontName="Helvetica-Bold", fontSize=8,
+        textColor=MUTED, leading=10,
+    )
+    value_style = ParagraphStyle(
+        "TV", fontName="Helvetica", fontSize=9.5,
+        textColor=NAVY, leading=12,
+    )
+
+    for i, (label, value) in enumerate(rows):
+        row_color = ROW_ALT if i % 2 == 0 else ROW_WHITE
+        c_obj.setFillColor(row_color)
+        c_obj.rect(x, y - row_h, col1_w + col2_w, row_h, fill=1, stroke=0)
+
+        # Thin border
+        c_obj.setStrokeColor(DIVIDER)
+        c_obj.setLineWidth(0.4)
+        c_obj.rect(x, y - row_h, col1_w + col2_w, row_h, fill=0, stroke=1)
+
+        # Label
+        lp = Paragraph(label, label_style)
+        lp.wrapOn(c_obj, col1_w - 0.4 * cm, row_h)
+        lp.drawOn(c_obj, x + 0.25 * cm, y - row_h + 0.1 * cm)
+
+        # Value
+        vp = Paragraph(str(value), value_style)
+        vp.wrapOn(c_obj, col2_w - 0.4 * cm, row_h)
+        vp.drawOn(c_obj, x + col1_w + 0.25 * cm, y - row_h + 0.08 * cm)
+
+        y -= row_h
+
+    return y   # new cursor y
+
+
+# ── Main generator ────────────────────────────────────────────────────────────
 def generate_offer_letter_pdf(offer, candidate):
     """
-    Generate a professional offer letter PDF using reportlab.
+    Generate a professional, beautifully designed offer letter PDF.
     Returns bytes of the generated PDF.
     """
     buffer = BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=2.5 * cm,
-        leftMargin=2.5 * cm,
-        topMargin=2 * cm,
-        bottomMargin=2 * cm,
-    )
+    c = canvas.Canvas(buffer, pagesize=A4)
+    c.setTitle(f"Offer Letter – {candidate.name}")
 
-    styles = getSampleStyleSheet()
+    # ── Format dates ──────────────────────────────────────────────────────────
+    offer_date_str   = offer.offer_date.strftime("%B %d, %Y")  if offer.offer_date   else ""
+    joining_date_str = offer.joining_date.strftime("%B %d, %Y") if offer.joining_date else "To be confirmed"
 
-    # Custom styles
-    company_style = ParagraphStyle(
-        "CompanyName",
-        parent=styles["Normal"],
-        fontSize=22,
-        fontName="Helvetica-Bold",
-        textColor=colors.HexColor("#1a1a2e"),
-        alignment=TA_CENTER,
-        spaceAfter=4,
-    )
-
-    tagline_style = ParagraphStyle(
-        "Tagline",
-        parent=styles["Normal"],
-        fontSize=10,
-        fontName="Helvetica",
-        textColor=colors.HexColor("#555555"),
-        alignment=TA_CENTER,
-        spaceAfter=12,
-    )
-
-    heading_style = ParagraphStyle(
-        "OfferHeading",
-        parent=styles["Normal"],
-        fontSize=16,
-        fontName="Helvetica-Bold",
-        textColor=colors.HexColor("#1a1a2e"),
-        alignment=TA_CENTER,
-        spaceAfter=6,
-    )
-
-    subheading_style = ParagraphStyle(
-        "SubHeading",
-        parent=styles["Normal"],
-        fontSize=10,
-        fontName="Helvetica",
-        textColor=colors.HexColor("#777777"),
-        alignment=TA_CENTER,
-        spaceAfter=20,
-    )
+    # ── Shared paragraph styles ───────────────────────────────────────────────
+    LEFT_X  = 2.2 * cm       # content left edge (after sidebar)
+    RIGHT_X = PAGE_W - 1.2 * cm
+    CONTENT_W = RIGHT_X - LEFT_X
 
     body_style = ParagraphStyle(
         "Body",
-        parent=styles["Normal"],
-        fontSize=10.5,
-        fontName="Helvetica",
-        textColor=colors.HexColor("#2d2d2d"),
+        fontName="Helvetica", fontSize=10,
+        textColor=BODY_TEXT, leading=15,
         alignment=TA_JUSTIFY,
-        leading=16,
-        spaceAfter=10,
+    )
+    bold_inline = ParagraphStyle(
+        "BI",
+        fontName="Helvetica", fontSize=10,
+        textColor=BODY_TEXT, leading=15,
+        alignment=TA_JUSTIFY,
     )
 
-    label_style = ParagraphStyle(
-        "Label",
-        parent=styles["Normal"],
-        fontSize=9,
-        fontName="Helvetica-Bold",
-        textColor=colors.HexColor("#555555"),
-        alignment=TA_LEFT,
-    )
+    # ════════════════════════════════════════════════════════════════════════
+    # PAGE CHROME
+    # ════════════════════════════════════════════════════════════════════════
+    draw_chrome(c)
+    draw_footer(c, offer.company_name or "Company", candidate.name)
 
-    value_style = ParagraphStyle(
-        "Value",
-        parent=styles["Normal"],
-        fontSize=10,
-        fontName="Helvetica",
-        textColor=colors.HexColor("#1a1a2e"),
-        alignment=TA_LEFT,
-    )
+    # ════════════════════════════════════════════════════════════════════════
+    # HEADER BLOCK
+    # ════════════════════════════════════════════════════════════════════════
+    cursor = PAGE_H - 1.4 * cm   # start near top
 
-    section_title_style = ParagraphStyle(
-        "SectionTitle",
-        parent=styles["Normal"],
-        fontSize=11,
-        fontName="Helvetica-Bold",
-        textColor=colors.HexColor("#1a1a2e"),
-        spaceAfter=6,
-        spaceBefore=12,
-    )
+    # Company name – large
+    c.setFont("Helvetica-Bold", 22)
+    c.setFillColor(NAVY)
+    c.drawString(LEFT_X, cursor, offer.company_name or "Company Name")
+    cursor -= 0.6 * cm
 
-    footer_style = ParagraphStyle(
-        "Footer",
-        parent=styles["Normal"],
-        fontSize=9,
-        fontName="Helvetica",
-        textColor=colors.HexColor("#888888"),
-        alignment=TA_CENTER,
-    )
+    # Gold underline beneath company name
+    name_w = c.stringWidth(offer.company_name or "Company Name", "Helvetica-Bold", 22)
+    c.setStrokeColor(GOLD)
+    c.setLineWidth(2.5)
+    c.line(LEFT_X, cursor, LEFT_X + name_w, cursor)
+    cursor -= 0.55 * cm
 
-    sign_style = ParagraphStyle(
-        "Sign",
-        parent=styles["Normal"],
-        fontSize=10,
-        fontName="Helvetica",
-        textColor=colors.HexColor("#2d2d2d"),
-        alignment=TA_LEFT,
-    )
+    # "OFFER OF EMPLOYMENT" badge strip
+    badge_h = 0.85 * cm
+    c.setFillColor(NAVY)
+    c.roundRect(LEFT_X, cursor - badge_h, CONTENT_W, badge_h, 4, fill=1, stroke=0)
+    c.setFillColor(GOLD)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawCentredString(LEFT_X + CONTENT_W / 2, cursor - badge_h + 0.22 * cm,
+                        "OFFER  OF  EMPLOYMENT")
+    cursor -= badge_h + 0.5 * cm
 
-    sign_bold_style = ParagraphStyle(
-        "SignBold",
-        parent=styles["Normal"],
-        fontSize=10,
-        fontName="Helvetica-Bold",
-        textColor=colors.HexColor("#1a1a2e"),
-        alignment=TA_LEFT,
-    )
+    # Date + Ref line
+    c.setFont("Helvetica", 9)
+    c.setFillColor(MUTED)
+    c.drawString(LEFT_X, cursor, f"Date: {offer_date_str}")
+    c.drawRightString(RIGHT_X, cursor, "Confidential")
+    cursor -= 0.9 * cm
 
-    # Accent color bar (simulated with a colored table row)
-    accent_color = colors.HexColor("#4a4aaa")
+    # ════════════════════════════════════════════════════════════════════════
+    # SALUTATION
+    # ════════════════════════════════════════════════════════════════════════
+    c.setFont("Helvetica", 10.5)
+    c.setFillColor(BODY_TEXT)
+    c.drawString(LEFT_X, cursor, f"Dear  {candidate.name},")
+    cursor -= 0.7 * cm
 
-    # Offer date formatting
-    offer_date_str = offer.offer_date.strftime("%B %d, %Y") if offer.offer_date else ""
-    joining_date_str = offer.joining_date.strftime("%B %d, %Y") if offer.joining_date else "To be confirmed"
-
-    content = []
-
-    # ── HEADER ──────────────────────────────────────────────────────────────
-    content.append(Paragraph(offer.company_name or "Company Name", company_style))
-    content.append(Paragraph("Confidential Employment Offer", tagline_style))
-
-    # Accent rule
-    content.append(HRFlowable(width="100%", thickness=3, color=accent_color, spaceAfter=14))
-
-    # Offer heading
-    content.append(Paragraph("OFFER OF EMPLOYMENT", heading_style))
-    content.append(Paragraph(f"Date: {offer_date_str}", subheading_style))
-
-    # ── RECIPIENT ────────────────────────────────────────────────────────────
-    content.append(Paragraph(f"Dear <b>{candidate.name}</b>,", body_style))
-
+    # Intro paragraph
+    dept_clause = f" in the <b>{offer.department}</b> department" if offer.department else ""
     intro = (
-        f"We are delighted to extend this formal offer of employment to you for the position of "
-        f"<b>{offer.position}</b>"
-        + (f" in the <b>{offer.department}</b> department" if offer.department else "")
-        + f" at <b>{offer.company_name}</b>. After careful consideration of your qualifications and "
-        f"interview performance, we are confident that you will be a valuable addition to our team."
+        f"We are pleased to extend this formal Offer of Employment for the position of "
+        f"<b>{offer.position}</b>{dept_clause} at <b>{offer.company_name}</b>. "
+        f"After a thorough evaluation of your experience, skills, and interview performance, "
+        f"we are confident that you will be a valued member of our growing team. "
+        f"We look forward to your positive response."
     )
-    content.append(Paragraph(intro, body_style))
+    h = draw_paragraph(c, intro, LEFT_X, cursor, CONTENT_W, body_style)
+    cursor -= h + 0.5 * cm
 
-    # ── EMPLOYMENT DETAILS TABLE ──────────────────────────────────────────────
-    content.append(Paragraph("Employment Details", section_title_style))
-    content.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#dddddd"), spaceAfter=8))
+    # ════════════════════════════════════════════════════════════════════════
+    # EMPLOYMENT DETAILS
+    # ════════════════════════════════════════════════════════════════════════
+    cursor = draw_section_title(c, "Employment Details", cursor) - 0.25 * cm
 
-    details_data = [
-        [Paragraph("Position / Role", label_style), Paragraph(offer.position, value_style)],
-        [Paragraph("Department", label_style), Paragraph(offer.department or "—", value_style)],
-        [Paragraph("Offered Salary (CTC)", label_style), Paragraph(offer.salary, value_style)],
-        [Paragraph("Date of Joining", label_style), Paragraph(joining_date_str, value_style)],
-        [Paragraph("Work Location", label_style), Paragraph(offer.work_location or "To be confirmed", value_style)],
-        [Paragraph("Working Hours", label_style), Paragraph(offer.work_hours or "9:00 AM – 6:00 PM", value_style)],
+    detail_rows = [
+        ("Position / Role",      offer.position),
+        ("Department",           offer.department or "—"),
+        ("Offered Salary (CTC)", offer.salary),
+        ("Date of Joining",      joining_date_str),
+        ("Work Location",        offer.work_location or "To be confirmed"),
+        ("Working Hours",        offer.work_hours or "9:00 AM – 6:00 PM"),
     ]
+    cursor = draw_details_table(c, detail_rows, LEFT_X, cursor)
+    cursor -= 0.55 * cm
 
-    details_table = Table(
-        details_data,
-        colWidths=[5 * cm, 11 * cm],
-        hAlign="LEFT",
-    )
-    details_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f4f4fb")),
-        ("BACKGROUND", (1, 0), (1, -1), colors.white),
-        ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.HexColor("#f9f9fd"), colors.white]),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e0e0e0")),
-        ("LEFTPADDING", (0, 0), (-1, -1), 10),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-        ("TOPPADDING", (0, 0), (-1, -1), 7),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-    ]))
-    content.append(details_table)
-    content.append(Spacer(1, 14))
+    # ════════════════════════════════════════════════════════════════════════
+    # TERMS & CONDITIONS
+    # ════════════════════════════════════════════════════════════════════════
+    cursor = draw_section_title(c, "Terms & Conditions", cursor) - 0.25 * cm
 
-    # ── TERMS ─────────────────────────────────────────────────────────────────
-    content.append(Paragraph("Terms & Conditions", section_title_style))
-    content.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#dddddd"), spaceAfter=8))
-
-    terms_text = (
-        "This offer is contingent upon the successful completion of background verification, "
-        "reference checks, and submission of required documents prior to your joining date. "
+    terms = (
+        "This offer is subject to the successful completion of background verification, "
+        "reference checks, and submission of all required documents prior to your joining date. "
         "By accepting this offer, you agree to abide by the company's policies, code of conduct, "
-        "and all applicable laws and regulations."
+        "and all applicable laws and regulations. This offer is not transferable and lapses if "
+        "not accepted within the specified time."
     )
-    content.append(Paragraph(terms_text, body_style))
+    h = draw_paragraph(c, terms, LEFT_X, cursor, CONTENT_W, body_style)
+    cursor -= h + 0.5 * cm
 
-    # ── ADDITIONAL BENEFITS ───────────────────────────────────────────────────
+    # ════════════════════════════════════════════════════════════════════════
+    # ADDITIONAL BENEFITS (conditional)
+    # ════════════════════════════════════════════════════════════════════════
     if offer.additional_benefits:
-        content.append(Paragraph("Additional Benefits & Notes", section_title_style))
-        content.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#dddddd"), spaceAfter=8))
-        content.append(Paragraph(offer.additional_benefits, body_style))
+        cursor = draw_section_title(c, "Benefits & Perks", cursor) - 0.25 * cm
+        h = draw_paragraph(c, offer.additional_benefits, LEFT_X, cursor, CONTENT_W, body_style)
+        cursor -= h + 0.5 * cm
 
-    # ── ACCEPTANCE ────────────────────────────────────────────────────────────
-    content.append(Spacer(1, 10))
-    content.append(Paragraph(
-        "We kindly request you to confirm your acceptance of this offer by signing and returning "
-        "a copy of this letter within <b>7 days</b> of receipt. We look forward to welcoming you "
-        "to our team and wish you a rewarding career ahead.",
-        body_style
-    ))
+    # ════════════════════════════════════════════════════════════════════════
+    # ACCEPTANCE NOTE
+    # ════════════════════════════════════════════════════════════════════════
+    # Subtle info box
+    box_h = 1.15 * cm
+    c.setFillColor(colors.HexColor("#EEF2FF"))   # very light indigo tint
+    c.setStrokeColor(colors.HexColor("#A5B4FC"))
+    c.setLineWidth(0.8)
+    c.roundRect(LEFT_X, cursor - box_h, CONTENT_W, box_h, 5, fill=1, stroke=1)
 
-    # ── SIGNATURE BLOCK ───────────────────────────────────────────────────────
-    content.append(Spacer(1, 24))
-    sig_data = [
-        [
-            Paragraph("For " + (offer.company_name or "Company"), sign_style),
-            Paragraph("Accepted by Candidate", sign_style),
-        ],
-        [Spacer(1, 30), Spacer(1, 30)],
-        [
-            Paragraph("____________________________", sign_style),
-            Paragraph("____________________________", sign_style),
-        ],
-        [
-            Paragraph(offer.hr_name or "Authorized Signatory", sign_bold_style),
-            Paragraph(candidate.name, sign_bold_style),
-        ],
-        [
-            Paragraph(offer.hr_designation or "HR Manager", sign_style),
-            Paragraph("Date: ________________", sign_style),
-        ],
-    ]
-    sig_table = Table(sig_data, colWidths=[8 * cm, 8 * cm], hAlign="LEFT")
-    sig_table.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-    ]))
-    content.append(sig_table)
+    c.setFont("Helvetica", 9.5)
+    c.setFillColor(colors.HexColor("#3730A3"))
+    acceptance_note = (
+        "Please sign and return a copy of this letter within  7 days  of receipt to confirm your acceptance."
+    )
+    c.drawCentredString(LEFT_X + CONTENT_W / 2, cursor - box_h + 0.35 * cm, acceptance_note)
+    cursor -= box_h + 0.7 * cm
 
-    # ── FOOTER ────────────────────────────────────────────────────────────────
-    content.append(Spacer(1, 20))
-    content.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#dddddd"), spaceAfter=8))
-    content.append(Paragraph(
-        f"{offer.company_name} · Confidential · This document is intended solely for {candidate.name}",
-        footer_style,
-    ))
+    # ════════════════════════════════════════════════════════════════════════
+    # SIGNATURE BLOCK
+    # ════════════════════════════════════════════════════════════════════════
+    cursor = draw_section_title(c, "Authorisation & Acceptance", cursor) - 0.4 * cm
 
-    doc.build(content)
+    col_w = CONTENT_W / 2 - 0.5 * cm
+    col1_x = LEFT_X
+    col2_x = LEFT_X + CONTENT_W / 2 + 0.5 * cm
+
+    # Left: company signatory
+    c.setFont("Helvetica-Bold", 8.5)
+    c.setFillColor(MUTED)
+    c.drawString(col1_x, cursor, "For " + (offer.company_name or "Company"))
+
+    # Right: candidate
+    c.drawString(col2_x, cursor, "Accepted by Candidate")
+    cursor -= 0.35 * cm
+
+    # Signature lines
+    c.setStrokeColor(NAVY)
+    c.setLineWidth(0.8)
+    sig_line_len = col_w
+    c.line(col1_x, cursor - 0.9 * cm, col1_x + sig_line_len, cursor - 0.9 * cm)
+    c.line(col2_x, cursor - 0.9 * cm, col2_x + sig_line_len, cursor - 0.9 * cm)
+    cursor -= 1.1 * cm
+
+    # Name / designation labels
+    c.setFont("Helvetica-Bold", 9.5)
+    c.setFillColor(NAVY)
+    c.drawString(col1_x, cursor, offer.hr_name or "Authorized Signatory")
+    c.drawString(col2_x, cursor, candidate.name)
+    cursor -= 0.35 * cm
+
+    c.setFont("Helvetica", 8.5)
+    c.setFillColor(MUTED)
+    c.drawString(col1_x, cursor, offer.hr_designation or "HR Manager")
+    c.drawString(col2_x, cursor, "Date: _______________")
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # SAVE
+    # ═══════════════════════════════════════════════════════════════════════
+    c.showPage()
+    c.save()
+
     pdf_bytes = buffer.getvalue()
     buffer.close()
     return pdf_bytes
