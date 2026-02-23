@@ -8,4 +8,8 @@ urlpatterns = [
     path("candidates/<int:pk>/", CandidateUpdateView.as_view()),
     path("candidates/<int:candidate_id>/rating/", CandidateRatingView.as_view()),
 
+    # Offer Letter endpoints
+    path("candidates/<int:candidate_id>/offer/", OfferLetterView.as_view()),
+    path("candidates/<int:candidate_id>/offer/send/", SendOfferLetterView.as_view()),
+    path("candidates/<int:candidate_id>/offer/pdf/", DownloadOfferLetterView.as_view()),
 ]

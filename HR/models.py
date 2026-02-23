@@ -1,7 +1,5 @@
 from django.db import models
 
-# Create your models here.
-from django.db import models
 
 class Candidate(models.Model):
     STATUS_CHOICES = [
@@ -30,6 +28,8 @@ class Candidate(models.Model):
 
     def __str__(self):
         return self.name
+
+
 class CandidateRating(models.Model):
     candidate = models.OneToOneField(
         Candidate,
@@ -50,3 +50,36 @@ class CandidateRating(models.Model):
 
     def __str__(self):
         return f"Rating - {self.candidate.name}"
+
+
+class OfferLetter(models.Model):
+    STATUS_CHOICES = [
+        ("draft", "Draft"),
+        ("sent", "Sent"),
+        ("accepted", "Accepted"),
+        ("declined", "Declined"),
+    ]
+
+    candidate = models.OneToOneField(
+        Candidate,
+        on_delete=models.CASCADE,
+        related_name="offer_letter"
+    )
+    # Allow blank/null so partial drafts can be saved without all fields
+    position = models.CharField(max_length=200, blank=True, default="")
+    department = models.CharField(max_length=200, blank=True)
+    salary = models.CharField(max_length=100, blank=True, default="")
+    joining_date = models.DateField(null=True, blank=True)
+    offer_date = models.DateField(auto_now_add=True)
+    work_location = models.CharField(max_length=200, blank=True)
+    work_hours = models.CharField(max_length=100, blank=True, default="9:00 AM - 6:00 PM")
+    company_name = models.CharField(max_length=200, blank=True, default="Our Company")
+    hr_name = models.CharField(max_length=200, blank=True)
+    hr_designation = models.CharField(max_length=200, blank=True, default="HR Manager")
+    additional_benefits = models.TextField(blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="draft")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Offer Letter - {self.candidate.name}"
