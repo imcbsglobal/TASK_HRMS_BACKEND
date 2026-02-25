@@ -1,5 +1,11 @@
 from rest_framework import serializers
-from .models import Candidate, CandidateRating, OfferLetter
+from .models import Candidate, CandidateRating, OfferLetter, PipelineStage
+
+
+class PipelineStageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PipelineStage
+        fields = ["id", "key", "title", "order"]
 
 
 class CandidateRatingSerializer(serializers.ModelSerializer):
@@ -9,7 +15,6 @@ class CandidateRatingSerializer(serializers.ModelSerializer):
 
 
 class OfferLetterSerializer(serializers.ModelSerializer):
-    # Make model-required fields optional at API level so partial drafts can be saved
     position = serializers.CharField(required=False, allow_blank=True, default="")
     salary = serializers.CharField(required=False, allow_blank=True, default="")
     joining_date = serializers.DateField(required=False, allow_null=True, default=None)

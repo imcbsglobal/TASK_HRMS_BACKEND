@@ -7,14 +7,86 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import Candidate, CandidateRating, OfferLetter
-from .serializers import CandidateSerializer, CandidateRatingSerializer, OfferLetterSerializer
+from .models import Candidate, CandidateRating, OfferLetter, PipelineStage
+from .serializers import (
+    CandidateSerializer, CandidateRatingSerializer,
+    OfferLetterSerializer, PipelineStageSerializer,
+)
 from .utils import extract_text, extract_fields
 from .offer_pdf import generate_offer_letter_pdf
 
+# ─────────────────────────────────────────────────────────────
+#  Fixed (built-in) stage keys — these cannot be deleted
+# ─────────────────────────────────────────────────────────────
+FIXED_STAGES = {"uploaded", "selected", "rejected"}
+
 
 # ─────────────────────────────────────────────────────────────
-#  Existing views (unchanged)
+#  Pipeline Stage Views
+# ─────────────────────────────────────────────────────────────
+
+class PipelineStageListView(APIView):
+    """
+    GET  /pipeline-stages/  → returns all custom stages ordered by `order`
+    POST /pipeline-stages/  → create a new custom stage
+    """
+
+    def get(self, request):
+        stages = PipelineStage.objects.all()
+        return Response(PipelineStageSerializer(stages, many=True).data)
+
+    def post(self, request):
+        # Prevent overriding fixed stages
+        key = request.data.get("key", "")
+        if key in FIXED_STAGES:
+            return Response(
+                {"error": f"'{key}' is a reserved stage and cannot be customised."},
+                status=400,
+            )
+        serializer = PipelineStageSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=201)
+        return Response(serializer.errors, status=400)
+
+
+class PipelineStageDetailView(APIView):
+    """
+    PATCH  /pipeline-stages/<pk>/  → rename or reorder a custom stage
+    DELETE /pipeline-stages/<pk>/  → remove a custom stage
+    """
+
+    def _get_stage(self, pk):
+        try:
+            return PipelineStage.objects.get(pk=pk)
+        except PipelineStage.DoesNotExist:
+            return None
+
+    def patch(self, request, pk):
+        stage = self._get_stage(pk)
+        if not stage:
+            return Response({"error": "Stage not found"}, status=404)
+
+        serializer = PipelineStageSerializer(stage, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)
+
+    def delete(self, request, pk):
+        stage = self._get_stage(pk)
+        if not stage:
+            return Response({"error": "Stage not found"}, status=404)
+
+        # Move any candidates still in this stage back to 'uploaded'
+        Candidate.objects.filter(status=stage.key).update(status="uploaded")
+
+        stage.delete()
+        return Response({"success": True})
+
+
+# ─────────────────────────────────────────────────────────────
+#  Existing Candidate Views (unchanged logic)
 # ─────────────────────────────────────────────────────────────
 
 class CandidateUploadView(APIView):
@@ -52,8 +124,21 @@ class CandidateListView(APIView):
 
 class CandidateStatusUpdateView(APIView):
     def patch(self, request, pk):
-        candidate = Candidate.objects.get(pk=pk)
-        candidate.status = request.data.get("status")
+        new_status = request.data.get("status")
+
+        # Allow fixed stages and any existing custom stage key
+        valid_custom_keys = set(
+            PipelineStage.objects.values_list("key", flat=True)
+        )
+        if new_status not in FIXED_STAGES and new_status not in valid_custom_keys:
+            return Response({"error": f"Invalid status '{new_status}'"}, status=400)
+
+        try:
+            candidate = Candidate.objects.get(pk=pk)
+        except Candidate.DoesNotExist:
+            return Response({"error": "Candidate not found"}, status=404)
+
+        candidate.status = new_status
         candidate.save()
         return Response({"success": True})
 
@@ -88,15 +173,10 @@ class CandidateRatingView(APIView):
 
 
 # ─────────────────────────────────────────────────────────────
-#  Offer Letter Views
+#  Offer Letter Views (unchanged)
 # ─────────────────────────────────────────────────────────────
 
 class OfferLetterView(APIView):
-    """
-    GET  /candidates/<id>/offer/  → fetch existing offer letter (or empty {})
-    POST /candidates/<id>/offer/  → create or update offer letter (save as draft)
-    """
-
     def get(self, request, candidate_id):
         try:
             offer = OfferLetter.objects.get(candidate_id=candidate_id)
@@ -111,28 +191,20 @@ class OfferLetterView(APIView):
             return Response({"error": "Candidate not found"}, status=404)
 
         try:
-            # Try to get existing offer
             offer = OfferLetter.objects.get(candidate=candidate)
             created = False
         except OfferLetter.DoesNotExist:
-            # Create a bare offer record first so the FK is satisfied
             offer = OfferLetter(candidate=candidate)
             created = True
 
         serializer = OfferLetterSerializer(offer, data=request.data, partial=True)
         if serializer.is_valid():
-            # Pass candidate explicitly so FK is always set
             serializer.save(candidate=candidate)
             return Response(serializer.data, status=201 if created else 200)
-
         return Response(serializer.errors, status=400)
 
 
 class DownloadOfferLetterView(APIView):
-    """
-    GET /candidates/<id>/offer/pdf/  → Download offer letter as PDF
-    """
-
     def get(self, request, candidate_id):
         try:
             candidate = Candidate.objects.get(pk=candidate_id)
@@ -144,7 +216,6 @@ class DownloadOfferLetterView(APIView):
         except OfferLetter.DoesNotExist:
             return Response({"error": "Offer letter not created yet"}, status=404)
 
-        # Guard: PDF generation needs at minimum position and joining_date
         if not offer.position or not offer.joining_date:
             return Response(
                 {"error": "Offer letter is incomplete. Please fill in Position and Joining Date before downloading."},
@@ -163,10 +234,6 @@ class DownloadOfferLetterView(APIView):
 
 
 class SendOfferLetterView(APIView):
-    """
-    POST /candidates/<id>/offer/send/  → Generate PDF and email it to candidate
-    """
-
     def post(self, request, candidate_id):
         try:
             candidate = Candidate.objects.get(pk=candidate_id)
@@ -181,7 +248,6 @@ class SendOfferLetterView(APIView):
         if not candidate.email:
             return Response({"error": "Candidate does not have an email address"}, status=400)
 
-        # Guard: must have required fields before sending
         if not offer.position or not offer.joining_date:
             return Response(
                 {"error": "Offer letter is incomplete. Please fill in at least Position and Joining Date."},
@@ -209,7 +275,6 @@ class SendOfferLetterView(APIView):
             email.attach(filename, pdf_bytes, "application/pdf")
             email.send()
 
-            # Update offer status to "sent"
             offer.status = "sent"
             offer.save()
 

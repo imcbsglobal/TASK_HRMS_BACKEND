@@ -13,7 +13,11 @@ class Command(BaseCommand):
         # self.stdout.write(self.style.WARNING('Cleared existing menus'))
 
         # Define menus that match EXACTLY with Sidebar.jsx
+        # Sidebar has 6 menus: Dashboard, Employee Management, Interview Process,
+        # Attendance (2 children), User Management (2 children), Master (2 children)
+        # NOTE: Certificates has been REMOVED - it does not exist in Sidebar.jsx
         menus_data = [
+            # 1. Dashboard — direct route, no children
             {
                 'name': 'Dashboard',
                 'slug': 'dashboard',
@@ -22,6 +26,7 @@ class Command(BaseCommand):
                 'order': 1,
                 'children': []
             },
+            # 2. Employee Management — direct route, no children
             {
                 'name': 'Employee Management',
                 'slug': 'employee-management',
@@ -30,6 +35,7 @@ class Command(BaseCommand):
                 'order': 2,
                 'children': []
             },
+            # 3. Interview Process — direct route, no children
             {
                 'name': 'Interview Process',
                 'slug': 'interviews',
@@ -38,20 +44,13 @@ class Command(BaseCommand):
                 'order': 3,
                 'children': []
             },
-            {
-                'name': 'Certificates',
-                'slug': 'certificates',
-                'icon': '📜',
-                'route': '/certificates',
-                'order': 4,
-                'children': []
-            },
+            # 4. Attendance — parent with 2 children (key: "attendance" in Sidebar.jsx)
             {
                 'name': 'Attendance',
                 'slug': 'attendance',
                 'icon': '⏰',
                 'route': None,  # Parent menu has no route, only children do
-                'order': 5,
+                'order': 4,
                 'children': [
                     {
                         'name': 'Admin View',
@@ -69,12 +68,13 @@ class Command(BaseCommand):
                     },
                 ]
             },
+            # 5. User Management — parent with 2 children (key: "user-management" in Sidebar.jsx)
             {
                 'name': 'User Management',
                 'slug': 'user-management',
                 'icon': '👤',
                 'route': None,  # Parent menu has no route, only children do
-                'order': 6,
+                'order': 5,
                 'children': [
                     {
                         'name': 'User List',
@@ -92,12 +92,13 @@ class Command(BaseCommand):
                     },
                 ]
             },
+            # 6. Master — parent with 2 children (key: "master" in Sidebar.jsx)
             {
                 'name': 'Master',
                 'slug': 'master',
                 'icon': '⚙️',
                 'route': None,  # Parent menu has no route, only children do
-                'order': 7,
+                'order': 6,
                 'children': [
                     {
                         'name': 'Department',
@@ -122,13 +123,13 @@ class Command(BaseCommand):
 
         for menu_data in menus_data:
             children = menu_data.pop('children', [])
-            
+
             # Create or update parent menu
             parent_menu, created = Menu.objects.update_or_create(
                 slug=menu_data['slug'],
                 defaults=menu_data
             )
-            
+
             if created:
                 created_count += 1
                 self.stdout.write(self.style.SUCCESS(f'✓ Created menu: {parent_menu.name}'))
@@ -143,7 +144,7 @@ class Command(BaseCommand):
                     slug=child_data['slug'],
                     defaults=child_data
                 )
-                
+
                 if child_created:
                     created_count += 1
                     self.stdout.write(self.style.SUCCESS(f'  ✓ Created submenu: {child_menu.name} ({child_menu.route})'))
@@ -161,7 +162,6 @@ class Command(BaseCommand):
         self.stdout.write('  • /dashboard')
         self.stdout.write('  • /employees')
         self.stdout.write('  • /interviews')
-        self.stdout.write('  • /certificates')
         self.stdout.write('  • /attendance/admin')
         self.stdout.write('  • /attendance/user')
         self.stdout.write('  • /user-management/user-list')

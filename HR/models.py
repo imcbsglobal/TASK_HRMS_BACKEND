@@ -1,13 +1,36 @@
 from django.db import models
 
 
+# ─────────────────────────────────────────────────────────────
+#  Pipeline Stage (company-customisable)
+# ─────────────────────────────────────────────────────────────
+
+class PipelineStage(models.Model):
+    """
+    Custom interview stages defined by each company.
+    The three built-in stages (uploaded, selected, rejected) are handled
+    in code and are never stored here.
+    """
+    key = models.SlugField(max_length=60, unique=True)   # e.g. "hr_round"
+    title = models.CharField(max_length=100)              # e.g. "HR Round"
+    order = models.PositiveSmallIntegerField(default=0)   # display order
+
+    class Meta:
+        ordering = ["order", "id"]
+
+    def __str__(self):
+        return self.title
+
+
+# ─────────────────────────────────────────────────────────────
+#  Candidate
+# ─────────────────────────────────────────────────────────────
+
 class Candidate(models.Model):
-    STATUS_CHOICES = [
+    # Fixed status choices: uploaded / selected / rejected are always present.
+    # Custom stages from PipelineStage use their `key` as the status value.
+    FIXED_STATUS_CHOICES = [
         ("uploaded", "CV Uploaded"),
-        ("interview", "Interview"),
-        ("interview1", "Interview 1"),
-        ("interview2", "Interview 2"),
-        ("pending", "Decision Pending"),
         ("selected", "Selected"),
         ("rejected", "Rejected"),
     ]
@@ -22,7 +45,8 @@ class Candidate(models.Model):
     skills = models.JSONField(default=list)
 
     cv = models.FileField(upload_to="cvs/")
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="uploaded")
+    # status stores either a fixed key or a PipelineStage.key
+    status = models.CharField(max_length=60, default="uploaded")
 
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -65,7 +89,6 @@ class OfferLetter(models.Model):
         on_delete=models.CASCADE,
         related_name="offer_letter"
     )
-    # Allow blank/null so partial drafts can be saved without all fields
     position = models.CharField(max_length=200, blank=True, default="")
     department = models.CharField(max_length=200, blank=True)
     salary = models.CharField(max_length=100, blank=True, default="")
