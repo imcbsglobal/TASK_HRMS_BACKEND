@@ -1,11 +1,13 @@
 # master/urls.py
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import LeaveTypeViewSet
+from .views import LeaveTypeViewSet, AllowanceViewSet, DeductionViewSet
 
 # Create a router and register viewsets
 router = DefaultRouter()
 router.register(r'leave-types', LeaveTypeViewSet, basename='leave-type')
+router.register(r'allowances', AllowanceViewSet, basename='allowance')
+router.register(r'deductions', DeductionViewSet, basename='deduction')
 
 urlpatterns = [
     path('', include(router.urls)),

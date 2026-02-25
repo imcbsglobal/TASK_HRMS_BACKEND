@@ -28,6 +28,7 @@ urlpatterns = [
     path("api/", include("access_control.urls")),
     path("api/master/", include("master.urls")),
     path("api/attendance/", include("attendance.urls")),  # Attendance endpoints
+    path("api/payroll/", include("payroll.urls")),  # Payroll endpoints
     path("api/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
 ]
 

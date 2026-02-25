@@ -54,7 +54,8 @@ INSTALLED_APPS = [
     'employee_management',
     'access_control',
     'master',
-    'attendance'
+    'attendance',
+    'payroll',
 ]
 
 MIDDLEWARE = [
@@ -110,7 +111,7 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'task_hrms_backend',
         'USER': 'postgres',
-        'PASSWORD': '1234',
+        'PASSWORD': '12345',
         'HOST': 'localhost',
         'PORT': '5432',
     }
