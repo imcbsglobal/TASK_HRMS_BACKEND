@@ -24,6 +24,9 @@ class AttendanceSerializer(serializers.ModelSerializer):
     verified_by_name = serializers.CharField(source='verified_by.get_full_name', read_only=True, allow_null=True)
     check_in_map_url = serializers.SerializerMethodField()
     check_out_map_url = serializers.SerializerMethodField()
+    # Leave type info – populated from approved LeaveRequest covering this attendance date
+    leave_type = serializers.SerializerMethodField()
+    leave_type_display = serializers.SerializerMethodField()
     
     class Meta:
         model = Attendance
@@ -37,6 +40,7 @@ class AttendanceSerializer(serializers.ModelSerializer):
             'late_approved_by', 'late_approved_by_name', 'late_approved_at',
             'check_in_latitude', 'check_in_longitude', 'check_in_address', 'check_in_map_url',
             'check_out_latitude', 'check_out_longitude', 'check_out_address', 'check_out_map_url',
+            'leave_type', 'leave_type_display',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['total_hours', 'created_at', 'updated_at', 
@@ -65,6 +69,25 @@ class AttendanceSerializer(serializers.ModelSerializer):
     
     def get_check_out_map_url(self, obj):
         return obj.get_check_out_map_url()
+
+    def _get_leave_request(self, obj):
+        """Return the approved LeaveRequest that covers this attendance date, if any."""
+        if obj.status != 'leave':
+            return None
+        return LeaveRequest.objects.filter(
+            user=obj.user,
+            status='approved',
+            start_date__lte=obj.date,
+            end_date__gte=obj.date,
+        ).first()
+
+    def get_leave_type(self, obj):
+        leave = self._get_leave_request(obj)
+        return leave.leave_type if leave else None
+
+    def get_leave_type_display(self, obj):
+        leave = self._get_leave_request(obj)
+        return leave.get_leave_type_display() if leave else None
 
 
 class CheckInSerializer(serializers.Serializer):
