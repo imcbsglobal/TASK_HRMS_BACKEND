@@ -340,6 +340,50 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         serializer = AttendanceSerializer(attendances, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    @action(detail=False, methods=['get'], url_path='employees-with-attendance')
+    def employees_with_attendance(self, request):
+        """
+        Returns employees (from employee_management) whose email matches
+        a user that has at least one attendance record.
+        Used by Payroll.jsx to populate the employee dropdown.
+        Admin only.
+        """
+        user = request.user
+        is_admin = (
+            user.is_staff or user.is_superuser or
+            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+        )
+        if not is_admin:
+            return Response({'error': 'Only admins can access this.'}, status=status.HTTP_403_FORBIDDEN)
+
+        from employee_management.models import Employee
+
+        # Get distinct emails of users who have attendance records
+        user_emails = (
+            Attendance.objects
+            .values_list('user__email', flat=True)
+            .distinct()
+        )
+
+        # Match those emails to Employee records
+        employees = Employee.objects.filter(
+            email__in=user_emails
+        ).select_related('department').order_by('first_name', 'last_name')
+
+        data = [
+            {
+                'id': emp.id,
+                'employee_id': emp.employee_id,
+                'first_name': emp.first_name,
+                'last_name': emp.last_name,
+                'email': emp.email,
+                'position': emp.position,
+                'department': emp.department.name if emp.department else '',
+            }
+            for emp in employees
+        ]
+        return Response(data, status=status.HTTP_200_OK)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LATE ARRIVAL REQUEST VIEWSET
