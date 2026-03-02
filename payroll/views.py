@@ -12,12 +12,66 @@ from .models import Payroll
 from .serializers import PayrollSerializer, PayrollDetailSerializer, PayrollCalculateSerializer
 from employee_management.models import Employee
 from master.models import Allowance, Deduction
-from attendance.models import Attendance
+from attendance.models import Attendance, LeaveRequest
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _get_leave_type_breakdown(employee, year, month):
+    """
+    Get detailed breakdown of leave types for the employee in the given month.
+    Returns dict with leave type counts and days.
+    """
+    from login.models import User
+    from datetime import date
+    
+    leave_breakdown = {
+        'sick_leave': {'count': 0, 'days': 0, 'label': 'Sick Leave'},
+        'casual_leave': {'count': 0, 'days': 0, 'label': 'Casual Leave'},
+        'annual_leave': {'count': 0, 'days': 0, 'label': 'Annual Leave'},
+        'maternity_leave': {'count': 0, 'days': 0, 'label': 'Maternity Leave'},
+        'paternity_leave': {'count': 0, 'days': 0, 'label': 'Paternity Leave'},
+        'unpaid_leave': {'count': 0, 'days': 0, 'label': 'Unpaid Leave'},
+        'other_leave': {'count': 0, 'days': 0, 'label': 'Other Leave'},
+    }
+    
+    try:
+        user = User.objects.filter(email=employee.email).first()
+        if not user:
+            return leave_breakdown
+            
+        # Get all approved leave requests that fall within this month
+        first_day = date(year, month, 1)
+        last_day = date(year, month, 31) if month in [1, 3, 5, 7, 8, 10, 12] else (
+            date(year, month, 30) if month in [4, 6, 9, 11] else 
+            date(year, month, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28)
+        )
+        
+        leave_requests = LeaveRequest.objects.filter(
+            user=user,
+            status='approved',
+            start_date__lte=last_day,
+            end_date__gte=first_day
+        )
+        
+        for leave_req in leave_requests:
+            # Calculate overlapping days in current month
+            actual_start = max(leave_req.start_date, first_day)
+            actual_end = min(leave_req.end_date, last_day)
+            days_in_month = (actual_end - actual_start).days + 1
+            
+            leave_type_key = f"{leave_req.leave_type}_leave"
+            if leave_type_key in leave_breakdown:
+                leave_breakdown[leave_type_key]['count'] += 1
+                leave_breakdown[leave_type_key]['days'] += days_in_month
+            
+    except Exception as e:
+        print(f"Error calculating leave breakdown: {e}")
+    
+    return leave_breakdown
+
 
 def _get_attendance_summary(employee, year, month, total_days):
     """
@@ -33,6 +87,7 @@ def _get_attendance_summary(employee, year, month, total_days):
     leave_days    – on approved leave
     working_days  – present + late + half_day  (physically attended office)
     paid_days     – present + late + leave      (no salary deduction)
+    leave_breakdown – detailed breakdown of each leave type
     """
     summary = {
         'present_days': 0,
@@ -42,6 +97,7 @@ def _get_attendance_summary(employee, year, month, total_days):
         'leave_days':   0,
         'working_days': 0,
         'paid_days':    0,
+        'leave_breakdown': {},
     }
     try:
         from login.models import User
@@ -57,15 +113,20 @@ def _get_attendance_summary(employee, year, month, total_days):
             summary['leave_days']   = att_qs.filter(status='leave').count()
             summary['working_days'] = summary['present_days'] + summary['late_days'] + summary['half_days']
             summary['paid_days']    = summary['present_days'] + summary['late_days'] + summary['leave_days']
+            
+            # Get detailed leave breakdown
+            summary['leave_breakdown'] = _get_leave_type_breakdown(employee, year, month)
         else:
             # No linked user – treat all days as paid to avoid incorrect deductions
             summary['present_days'] = total_days
             summary['working_days'] = total_days
             summary['paid_days']    = total_days
+            summary['leave_breakdown'] = _get_leave_type_breakdown(employee, year, month)
     except Exception:
         summary['present_days'] = total_days
         summary['working_days'] = total_days
         summary['paid_days']    = total_days
+        summary['leave_breakdown'] = {}
     return summary
 
 
@@ -133,6 +194,7 @@ def _build_payroll_dict(employee, year, month):
             'paid_days':            att['paid_days'],
             'per_day_salary':       str(per_day),
             'attendance_deduction': str(att_deduction),
+            'leave_breakdown':      att.get('leave_breakdown', {}),
         },
         'allowances': [
             {'id': a.id, 'name': a.allowance_name, 'amount': str(a.amount), 'description': a.description}

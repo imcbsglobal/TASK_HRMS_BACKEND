@@ -88,7 +88,7 @@ class Attendance(models.Model):
         if self.check_in_time and self.check_out_time:
             delta = self.check_out_time - self.check_in_time
             hours = delta.total_seconds() / 3600
-            self.total_hours = round(hours, 2)
+            self.total_hours = round(hours, 2)    
             return self.total_hours
         return 0.00
     
@@ -184,7 +184,7 @@ class LeaveRequest(models.Model):
     ]
     
     user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
+        settings.AUTH_USER_MODEL,    
         on_delete=models.CASCADE,
         related_name='leave_requests'
     )
