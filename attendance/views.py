@@ -384,6 +384,152 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         ]
         return Response(data, status=status.HTTP_200_OK)
 
+    @action(detail=False, methods=['get'], url_path='avg-attendance-stats')
+    def avg_attendance_stats(self, request):
+        """
+        Admin endpoint: returns average attendance percentage across ALL users
+        for the current month (or ?year=&month= params).
+
+        Response:
+          {
+            year, month,
+            total_working_days,   # weekdays so far this month up to today
+            total_users,          # distinct users with any attendance record this month
+            avg_attendance_percentage,   # (present+late) / working_days averaged across users
+          }
+        """
+        user = request.user
+        is_admin = (
+            user.is_staff or user.is_superuser or
+            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+        )
+        if not is_admin:
+            return Response({'error': 'Only admins can access this.'}, status=status.HTTP_403_FORBIDDEN)
+
+        today = timezone.now().date()
+        year  = int(request.query_params.get('year',  today.year))
+        month = int(request.query_params.get('month', today.month))
+
+        first_day = today.replace(year=year, month=month, day=1)
+        # Count weekdays from first_day up to today (or month end if querying past month)
+        from calendar import monthrange
+        last_day_of_month = today.replace(year=year, month=month, day=monthrange(year, month)[1])
+        count_until = min(today, last_day_of_month)
+
+        working_days = sum(
+            1 for d in range((count_until - first_day).days + 1)
+            if (first_day + timedelta(days=d)).weekday() < 5
+        )
+
+        if working_days == 0:
+            return Response({
+                'year': year, 'month': month,
+                'total_working_days': 0,
+                'total_users': 0,
+                'avg_attendance_percentage': 0.0,
+            })
+
+        # Get all attendance records for all users this month up to today
+        records = Attendance.objects.filter(
+            date__gte=first_day,
+            date__lte=count_until,
+        )
+
+        # Distinct users who have any record this month
+        user_ids = records.values_list('user_id', flat=True).distinct()
+        total_users = user_ids.count()
+
+        if total_users == 0:
+            return Response({
+                'year': year, 'month': month,
+                'total_working_days': working_days,
+                'total_users': 0,
+                'avg_attendance_percentage': 0.0,
+            })
+
+        # For each user: present days = status in ['present','late']
+        # avg % = sum of (user_present / working_days * 100) / total_users
+        from django.db.models import Count, Q
+        user_present_counts = (
+            records
+            .filter(status__in=['present', 'late'])
+            .values('user_id')
+            .annotate(present_days=Count('id'))
+        )
+        present_map = {row['user_id']: row['present_days'] for row in user_present_counts}
+
+        total_pct = sum(
+            (present_map.get(uid, 0) / working_days * 100)
+            for uid in user_ids
+        )
+        avg_pct = round(total_pct / total_users, 1)
+
+        return Response({
+            'year': year,
+            'month': month,
+            'total_working_days': working_days,
+            'total_users': total_users,
+            'avg_attendance_percentage': avg_pct,
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], url_path='attendance-trend')
+    def attendance_trend(self, request):
+        """
+        Admin endpoint: returns daily attendance percentage for the last N days
+        (default 14). Used by the Dashboard Attendance Trend chart.
+
+        Response: [
+          { "day": "1", "date": "2026-02-20", "pct": 88.5, "present": 18, "total": 20 },
+          ...
+        ]
+        Query params:
+          ?days=14   -- how many past days to include (max 60)
+        """
+        user = request.user
+        is_admin = (
+            user.is_staff or user.is_superuser or
+            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+        )
+        if not is_admin:
+            return Response(
+                {'error': 'Only admins can access this.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        days = min(int(request.query_params.get('days', 14)), 60)
+        today = timezone.now().date()
+        start_date = today - timedelta(days=days - 1)
+
+        # Fetch all records in range in one query
+        records = Attendance.objects.filter(
+            date__gte=start_date,
+            date__lte=today,
+        ).values('date', 'status')
+
+        # Group by date
+        from collections import defaultdict
+        day_map = defaultdict(lambda: {'present': 0, 'total': 0})
+        for rec in records:
+            d = rec['date']
+            day_map[d]['total'] += 1
+            if rec['status'] in ('present', 'late'):
+                day_map[d]['present'] += 1
+
+        result = []
+        for i in range(days):
+            d = start_date + timedelta(days=i)
+            entry = day_map.get(d, {'present': 0, 'total': 0})
+            pct = round(entry['present'] / entry['total'] * 100, 1) if entry['total'] > 0 else 0
+            result.append({
+                'day': str(d.day),
+                'date': str(d),
+                'pct': pct,
+                'present': entry['present'],
+                'total': entry['total'],
+            })
+
+        return Response(result, status=status.HTTP_200_OK)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LATE ARRIVAL REQUEST VIEWSET
