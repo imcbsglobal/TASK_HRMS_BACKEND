@@ -1,6 +1,44 @@
 # master/serializers.py
 from rest_framework import serializers
-from .models import LeaveType, Allowance, Deduction
+from .models import LeaveType, Allowance, Deduction, Holiday, Announcement
+
+
+class AnnouncementSerializer(serializers.ModelSerializer):
+    """Serializer for Announcement model"""
+    tag_display = serializers.CharField(source='get_tag_display', read_only=True)
+
+    class Meta:
+        model = Announcement
+        fields = [
+            'id', 'title', 'body', 'date', 'tag', 'tag_display',
+            'icon', 'is_pinned', 'is_active',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'tag_display']
+
+
+class HolidaySerializer(serializers.ModelSerializer):
+    """Serializer for Holiday model"""
+    type_display = serializers.CharField(source='get_type_display', read_only=True)
+    days_until   = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Holiday
+        fields = [
+            'id', 'name', 'date', 'type', 'type_display',
+            'description', 'is_active', 'days_until',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'type_display', 'days_until']
+
+    def get_days_until(self, obj):
+        from django.utils import timezone
+        today = timezone.now().date()
+        delta = (obj.date - today).days
+        return delta
+
+
+
 
 
 class LeaveTypeSerializer(serializers.ModelSerializer):
@@ -95,4 +133,3 @@ class DeductionSerializer(serializers.ModelSerializer):
             'email': obj.employee.email,
             'employee_id': obj.employee.employee_id,
         }
-

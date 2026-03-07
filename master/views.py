@@ -4,8 +4,9 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.db.models import Q
-from .models import LeaveType, Allowance, Deduction
-from .serializers import LeaveTypeSerializer, AllowanceSerializer, DeductionSerializer
+from django.utils import timezone
+from .models import LeaveType, Allowance, Deduction, Holiday, Announcement
+from .serializers import LeaveTypeSerializer, AllowanceSerializer, DeductionSerializer, HolidaySerializer, AnnouncementSerializer
 
 
 class LeaveTypeViewSet(viewsets.ModelViewSet):
@@ -368,3 +369,92 @@ class DeductionViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(deductions, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+
+class HolidayViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for Holiday CRUD operations
+
+    Endpoints:
+    - GET    /api/master/holidays/            - List all holidays
+    - POST   /api/master/holidays/            - Create new holiday
+    - GET    /api/master/holidays/{id}/       - Retrieve specific holiday
+    - PUT    /api/master/holidays/{id}/       - Update holiday
+    - PATCH  /api/master/holidays/{id}/       - Partial update
+    - DELETE /api/master/holidays/{id}/       - Delete holiday
+    - GET    /api/master/holidays/upcoming/   - Holidays from today onward (for dashboard)
+    """
+    queryset = Holiday.objects.all()
+    serializer_class = HolidaySerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = Holiday.objects.all()
+
+        is_active = self.request.query_params.get('is_active', None)
+        if is_active is not None:
+            queryset = queryset.filter(is_active=is_active.lower() == 'true')
+
+        type_filter = self.request.query_params.get('type', None)
+        if type_filter:
+            queryset = queryset.filter(type=type_filter)
+
+        search = self.request.query_params.get('search', None)
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search) | Q(description__icontains=search)
+            )
+
+        return queryset
+
+    @action(detail=False, methods=['get'])
+    def upcoming(self, request):
+        """Return active holidays from today onward, ordered by date (used by Dashboard)"""
+        today = timezone.now().date()
+        holidays = Holiday.objects.filter(is_active=True, date__gte=today).order_by('date')
+        serializer = self.get_serializer(holidays, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+class AnnouncementViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for Announcement CRUD operations
+
+    Endpoints:
+    - GET    /api/master/announcements/            - List all
+    - POST   /api/master/announcements/            - Create
+    - GET    /api/master/announcements/{id}/       - Retrieve
+    - PUT    /api/master/announcements/{id}/       - Update
+    - PATCH  /api/master/announcements/{id}/       - Partial update
+    - DELETE /api/master/announcements/{id}/       - Delete
+    - GET    /api/master/announcements/dashboard/  - Latest 4 active (for Dashboard)
+    """
+    queryset = Announcement.objects.all()
+    serializer_class = AnnouncementSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = Announcement.objects.all()
+
+        is_active = self.request.query_params.get('is_active', None)
+        if is_active is not None:
+            queryset = queryset.filter(is_active=is_active.lower() == 'true')
+
+        tag = self.request.query_params.get('tag', None)
+        if tag:
+            queryset = queryset.filter(tag=tag)
+
+        search = self.request.query_params.get('search', None)
+        if search:
+            queryset = queryset.filter(
+                Q(title__icontains=search) | Q(body__icontains=search)
+            )
+
+        return queryset
+
+    @action(detail=False, methods=['get'])
+    def dashboard(self, request):
+        """Return latest 4 active announcements for the Dashboard widget (pinned first)"""
+        announcements = Announcement.objects.filter(is_active=True).order_by(
+            '-is_pinned', '-date', '-created_at'
+        )[:4]
+        serializer = self.get_serializer(announcements, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)

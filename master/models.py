@@ -134,6 +134,55 @@ class Allowance(models.Model):
         return dict(self.MONTH_CHOICES).get(self.month, '')
 
 
+class Holiday(models.Model):
+    """Model to store company/public holidays"""
+
+    TYPE_CHOICES = [
+        ('national',  'National'),
+        ('regional',  'Regional'),
+        ('company',   'Company'),
+        ('optional',  'Optional'),
+    ]
+
+    name = models.CharField(
+        max_length=150,
+        help_text="Name of the holiday (e.g., Christmas Day)"
+    )
+    date = models.DateField(
+        help_text="Date of the holiday"
+    )
+    type = models.CharField(
+        max_length=20,
+        choices=TYPE_CHOICES,
+        default='national',
+        help_text="Type of holiday"
+    )
+    description = models.TextField(
+        blank=True,
+        default="",
+        help_text="Optional description or notes"
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Whether this holiday is currently visible"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'master_holidays'
+        ordering = ['date']
+        verbose_name = 'Holiday'
+        verbose_name_plural = 'Holidays'
+
+    def __str__(self):
+        return f"{self.name} ({self.date})"
+
+    @property
+    def type_display(self):
+        return dict(self.TYPE_CHOICES).get(self.type, self.type)
+
+
 class Deduction(models.Model):
     """Model to store employee deductions"""
     
@@ -204,3 +253,58 @@ class Deduction(models.Model):
     def month_display(self):
         return dict(self.MONTH_CHOICES).get(self.month, '')
 
+class Announcement(models.Model):
+    """Model to store HR announcements shown on the dashboard"""
+
+    TAG_CHOICES = [
+        ('general',     'General'),
+        ('performance', 'Performance'),
+        ('benefits',    'Benefits'),
+        ('training',    'Training'),
+        ('holiday',     'Holiday'),
+        ('policy',      'Policy'),
+        ('event',       'Event'),
+    ]
+
+    title = models.CharField(
+        max_length=255,
+        help_text="Announcement headline"
+    )
+    body = models.TextField(
+        blank=True,
+        default="",
+        help_text="Full announcement details"
+    )
+    date = models.DateField(
+        help_text="Announcement date"
+    )
+    tag = models.CharField(
+        max_length=20,
+        choices=TAG_CHOICES,
+        default='general',
+        help_text="Category tag"
+    )
+    icon = models.CharField(
+        max_length=10,
+        default='📢',
+        help_text="Emoji icon for this announcement"
+    )
+    is_pinned = models.BooleanField(
+        default=False,
+        help_text="Pin to top of the list"
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Whether this announcement is visible"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'master_announcements'
+        ordering = ['-is_pinned', '-date', '-created_at']
+        verbose_name = 'Announcement'
+        verbose_name_plural = 'Announcements'
+
+    def __str__(self):
+        return self.title
