@@ -74,7 +74,7 @@ class DepartmentDetailView(APIView):
             return Response(serializer.data)
         except Department.DoesNotExist:
             return Response(
-                {"error": "Department not found"}, 
+                {"error": "Department not found"},
                 status=status.HTTP_404_NOT_FOUND
             )
 
@@ -87,7 +87,7 @@ class DepartmentDetailView(APIView):
             return Response(serializer.data)
         except Department.DoesNotExist:
             return Response(
-                {"error": "Department not found"}, 
+                {"error": "Department not found"},
                 status=status.HTTP_404_NOT_FOUND
             )
 
@@ -97,14 +97,14 @@ class DepartmentDetailView(APIView):
             # Check if department has employees
             if department.employees.exists():
                 return Response(
-                    {"error": "Cannot delete department with associated employees"}, 
+                    {"error": "Cannot delete department with associated employees"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
             department.delete()
             return Response(status=status.HTTP_204_NO_CONTENT)
         except Department.DoesNotExist:
             return Response(
-                {"error": "Department not found"}, 
+                {"error": "Department not found"},
                 status=status.HTTP_404_NOT_FOUND
             )
 
@@ -136,7 +136,7 @@ class CustomFieldDefinitionDetailView(APIView):
             return Response(serializer.data)
         except CustomFieldDefinition.DoesNotExist:
             return Response(
-                {"error": "Custom field not found"}, 
+                {"error": "Custom field not found"},
                 status=status.HTTP_404_NOT_FOUND
             )
 
@@ -149,7 +149,7 @@ class CustomFieldDefinitionDetailView(APIView):
             return Response(serializer.data)
         except CustomFieldDefinition.DoesNotExist:
             return Response(
-                {"error": "Custom field not found"}, 
+                {"error": "Custom field not found"},
                 status=status.HTTP_404_NOT_FOUND
             )
 
@@ -162,6 +162,6 @@ class CustomFieldDefinitionDetailView(APIView):
             return Response(status=status.HTTP_204_NO_CONTENT)
         except CustomFieldDefinition.DoesNotExist:
             return Response(
-                {"error": "Custom field not found"}, 
+                {"error": "Custom field not found"},
                 status=status.HTTP_404_NOT_FOUND
             )

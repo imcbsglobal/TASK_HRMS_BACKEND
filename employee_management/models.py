@@ -18,7 +18,6 @@ class Employee(models.Model):
         blank=True
     )
 
-    
     employee_id = models.CharField(
         max_length=20,
         unique=True,
@@ -42,6 +41,16 @@ class Employee(models.Model):
     position = models.CharField(max_length=100)
     employment_type = models.CharField(max_length=50)
     status = models.CharField(max_length=50, default="active")
+
+    WORK_LOCATION_CHOICES = [
+        ('in_office', 'In Office'),
+        ('out_of_office', 'Out of Office'),
+    ]
+    work_location = models.CharField(
+        max_length=20,
+        choices=WORK_LOCATION_CHOICES,
+        default='in_office'
+    )
 
     date_of_birth = models.DateField(null=True, blank=True)
     date_of_joining = models.DateField()
@@ -76,7 +85,6 @@ class Employee(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-  
     def save(self, *args, **kwargs):
         if not self.employee_id:
             last_emp = Employee.objects.order_by("-id").first()
@@ -111,25 +119,25 @@ class CustomFieldDefinition(models.Model):
     field_name = models.CharField(max_length=100, help_text="Internal field name (no spaces)")
     field_label = models.CharField(max_length=200, help_text="Display label for the field")
     field_type = models.CharField(max_length=20, choices=FIELD_TYPES, default='text')
-    
+
     # For select/dropdown fields - comma separated options
     field_options = models.TextField(
         blank=True,
         help_text="For dropdown fields: comma-separated options (e.g., 'Option1,Option2,Option3')"
     )
-    
+
     is_required = models.BooleanField(default=False)
     default_value = models.CharField(max_length=500, blank=True)
-    
+
     # Help text shown to users
     help_text = models.CharField(max_length=500, blank=True)
-    
+
     # Display order
     display_order = models.IntegerField(default=0)
-    
+
     # Active/Inactive
     is_active = models.BooleanField(default=True)
-    
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -139,7 +147,7 @@ class CustomFieldDefinition(models.Model):
 
     def __str__(self):
         return f"{self.field_label} ({self.field_type})"
-    
+
     def get_options_list(self):
         """Returns field options as a list"""
         if self.field_options:

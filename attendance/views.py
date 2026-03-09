@@ -435,9 +435,11 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             date__lte=count_until,
         )
 
-        # Distinct users who have any record this month
-        user_ids = records.values_list('user_id', flat=True).distinct()
-        total_users = user_ids.count()
+        # Use ALL active users as denominator — users with no records count as 0%
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        all_user_ids = list(User.objects.filter(is_active=True).values_list('id', flat=True))
+        total_users = len(all_user_ids)
 
         if total_users == 0:
             return Response({
@@ -448,8 +450,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             })
 
         # For each user: present days = status in ['present','late']
-        # avg % = sum of (user_present / working_days * 100) / total_users
-        from django.db.models import Count, Q
+        from django.db.models import Count
         user_present_counts = (
             records
             .filter(status__in=['present', 'late'])
@@ -458,9 +459,10 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         )
         present_map = {row['user_id']: row['present_days'] for row in user_present_counts}
 
+        # Users absent all month (no records) correctly contribute 0% to the average
         total_pct = sum(
-            (present_map.get(uid, 0) / working_days * 100)
-            for uid in user_ids
+            min(present_map.get(uid, 0) / working_days * 100, 100)
+            for uid in all_user_ids
         )
         avg_pct = round(total_pct / total_users, 1)
 
