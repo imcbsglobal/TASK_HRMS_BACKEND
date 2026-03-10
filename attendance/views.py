@@ -9,6 +9,7 @@ from calendar import monthrange
 import pytz
 
 from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest
+from .geofence import validate_geofence
 from .serializers import (
     AttendanceSerializer, CheckInSerializer, CheckOutSerializer,
     MonthlyStatsSerializer, TodayAttendanceSerializer,
@@ -107,6 +108,13 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         latitude = serializer.validated_data.get('latitude')
         longitude = serializer.validated_data.get('longitude')
         address = serializer.validated_data.get('address', '')
+
+        # ── Geofence enforcement ──────────────────────────────────────────────
+        settings_obj = AttendanceSettings.objects.order_by('-id').first()
+        allowed, geo_error, _ = validate_geofence(user, latitude, longitude, settings_obj)
+        if not allowed:
+            return Response({'error': geo_error}, status=status.HTTP_403_FORBIDDEN)
+        # ─────────────────────────────────────────────────────────────────────
         
         attendance, created = Attendance.objects.get_or_create(
             user=user,
@@ -150,6 +158,13 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         latitude = serializer.validated_data.get('latitude')
         longitude = serializer.validated_data.get('longitude')
         address = serializer.validated_data.get('address', '')
+
+        # ── Geofence enforcement ──────────────────────────────────────────────
+        settings_obj = AttendanceSettings.objects.order_by('-id').first()
+        allowed, geo_error, _ = validate_geofence(user, latitude, longitude, settings_obj)
+        if not allowed:
+            return Response({'error': geo_error}, status=status.HTTP_403_FORBIDDEN)
+        # ─────────────────────────────────────────────────────────────────────
         
         try:
             attendance = Attendance.objects.get(user=user, date=today)
@@ -901,4 +916,32 @@ class AttendanceSettingsViewSet(viewsets.ModelViewSet):
         if not settings:
             settings = AttendanceSettings.objects.create()
         serializer = self.get_serializer(settings)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['patch'], url_path='update-current')
+    def update_current(self, request):
+        """
+        Admin-only: PATCH /attendance/settings/update-current/
+        Updates (or creates) the single AttendanceSettings record.
+        Accepts any subset of fields including office_latitude,
+        office_longitude, and office_radius_meters.
+        """
+        user = request.user
+        is_admin = (
+            user.is_staff or user.is_superuser or
+            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+        )
+        if not is_admin:
+            return Response(
+                {'error': 'Only admins can update attendance settings.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        settings_obj = AttendanceSettings.objects.first()
+        if not settings_obj:
+            settings_obj = AttendanceSettings.objects.create()
+
+        serializer = self.get_serializer(settings_obj, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
         return Response(serializer.data, status=status.HTTP_200_OK)

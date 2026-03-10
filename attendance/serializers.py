@@ -395,8 +395,11 @@ class AttendanceSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = AttendanceSettings
         fields = [
-            'id', 'office_start_time', 'office_end_time', 
-            'grace_period_minutes', 'minimum_hours_full_day', 
-            'minimum_hours_half_day', 'created_at', 'updated_at'
+            'id', 'office_start_time', 'office_end_time',
+            'grace_period_minutes', 'minimum_hours_full_day',
+            'minimum_hours_half_day',
+            # ── Geofence fields ──
+            'office_latitude', 'office_longitude', 'office_radius_meters',
+            'created_at', 'updated_at',
         ]
         read_only_fields = ['created_at', 'updated_at']

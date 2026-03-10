@@ -14,7 +14,7 @@ class UserSerializer(serializers.ModelSerializer):
         model  = User
         fields = (
             'id', 'username', 'first_name', 'last_name',
-            'email', 'role', 'profile_image', 'is_active', 'plain_password',
+            'email', 'role', 'profile_image', 'is_active', 'plain_password', 'work_location',
         )
 
     def get_profile_image(self, obj):
@@ -33,7 +33,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model  = User
-        fields = ['id', 'username', 'password', 'first_name', 'last_name', 'email', 'role', 'profile_image', 'is_active']
+        fields = ['id', 'username', 'password', 'first_name', 'last_name', 'email', 'role', 'profile_image', 'is_active', 'work_location']
 
     def create(self, validated_data):
         # Store the plain password before hashing (for development only)
@@ -58,7 +58,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model  = User
-        fields = ['username', 'password', 'first_name', 'last_name', 'email', 'role', 'is_active', 'profile_image']
+        fields = ['username', 'password', 'first_name', 'last_name', 'email', 'role', 'is_active', 'profile_image', 'work_location']
 
     def update(self, instance, validated_data):
         image_value = validated_data.pop('profile_image', 'NOT_PROVIDED')

@@ -26,7 +26,6 @@ class Attendance(models.Model):
     total_hours = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
     notes = models.TextField(blank=True, null=True)
     
-    # Location tracking fields
     check_in_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     check_in_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     check_in_address = models.TextField(blank=True, null=True)
@@ -35,32 +34,14 @@ class Attendance(models.Model):
     check_out_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     check_out_address = models.TextField(blank=True, null=True)
     
-    # Admin verification fields
     is_verified = models.BooleanField(default=False)
-    verified_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True, blank=True,
-        related_name='verified_attendances'
-    )
+    verified_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='verified_attendances')
     verified_at = models.DateTimeField(null=True, blank=True)
     
-    # Late request fields (legacy – kept for backward compat)
     late_request = models.BooleanField(default=False)
     late_request_reason = models.TextField(blank=True, null=True)
-    late_request_status = models.CharField(
-        max_length=20, 
-        choices=LATE_REQUEST_STATUS, 
-        null=True, 
-        blank=True
-    )
-    late_approved_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, 
-        on_delete=models.SET_NULL, 
-        null=True, 
-        blank=True,
-        related_name='approved_late_requests'
-    )
+    late_request_status = models.CharField(max_length=20, choices=LATE_REQUEST_STATUS, null=True, blank=True)
+    late_approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='approved_late_requests')
     late_approved_at = models.DateTimeField(null=True, blank=True)
     
     created_at = models.DateTimeField(auto_now_add=True)
@@ -111,12 +92,6 @@ class Attendance(models.Model):
 
 
 class LateArrivalRequest(models.Model):
-    """
-    Standalone late-arrival request.
-    Users submit a date, expected arrival time and a reason.
-    Admins approve or reject, which marks the attendance record as 'late' + verified.
-    """
-
     STATUS_CHOICES = [
         ('pending',  'Pending'),
         ('approved', 'Approved'),
@@ -124,28 +99,14 @@ class LateArrivalRequest(models.Model):
         ('cancelled','Cancelled'),
     ]
 
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name='late_arrival_requests',
-    )
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='late_arrival_requests')
     date = models.DateField()
-    expected_arrival_time = models.TimeField(
-        help_text="Expected / actual late arrival time (HH:MM)"
-    )
+    expected_arrival_time = models.TimeField(help_text="Expected / actual late arrival time (HH:MM)")
     reason = models.TextField()
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
-
-    # Admin action
-    reviewed_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True, blank=True,
-        related_name='reviewed_late_arrivals',
-    )
+    reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_late_arrivals')
     reviewed_at = models.DateTimeField(null=True, blank=True)
     admin_notes = models.TextField(blank=True, null=True)
-
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -153,57 +114,32 @@ class LateArrivalRequest(models.Model):
         ordering = ['-created_at']
         verbose_name = 'Late Arrival Request'
         verbose_name_plural = 'Late Arrival Requests'
-        # One pending/approved request per user per date
         unique_together = ['user', 'date']
 
     def __str__(self):
-        return (
-            f"{self.user.username} – {self.date} "
-            f"@ {self.expected_arrival_time} ({self.status})"
-        )
+        return f"{self.user.username} - {self.date} @ {self.expected_arrival_time} ({self.status})"
 
 
 class LeaveRequest(models.Model):
-    """Leave request model for employees to request time off"""
-    
     LEAVE_TYPE_CHOICES = [
-        ('sick', 'Sick Leave'),
-        ('casual', 'Casual Leave'),
-        ('annual', 'Annual Leave'),
-        ('maternity', 'Maternity Leave'),
-        ('paternity', 'Paternity Leave'),
-        ('unpaid', 'Unpaid Leave'),
-        ('other', 'Other'),
+        ('sick', 'Sick Leave'), ('casual', 'Casual Leave'), ('annual', 'Annual Leave'),
+        ('maternity', 'Maternity Leave'), ('paternity', 'Paternity Leave'),
+        ('unpaid', 'Unpaid Leave'), ('other', 'Other'),
     ]
-    
     STATUS_CHOICES = [
-        ('pending', 'Pending'),
-        ('approved', 'Approved'),
-        ('rejected', 'Rejected'),
-        ('cancelled', 'Cancelled'),
+        ('pending', 'Pending'), ('approved', 'Approved'),
+        ('rejected', 'Rejected'), ('cancelled', 'Cancelled'),
     ]
     
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,    
-        on_delete=models.CASCADE,
-        related_name='leave_requests'
-    )
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='leave_requests')
     leave_type = models.CharField(max_length=20, choices=LEAVE_TYPE_CHOICES, default='casual')
     start_date = models.DateField()
     end_date = models.DateField()
     reason = models.TextField()
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
-    
-    # Admin action fields
-    reviewed_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True, blank=True,
-        related_name='reviewed_leave_requests'
-    )
+    reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_leave_requests')
     reviewed_at = models.DateTimeField(null=True, blank=True)
     admin_notes = models.TextField(blank=True, null=True)
-    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
@@ -217,7 +153,6 @@ class LeaveRequest(models.Model):
     
     @property
     def total_days(self):
-        """Calculate total leave days (inclusive)"""
         if self.start_date and self.end_date:
             return (self.end_date - self.start_date).days + 1
         return 0
@@ -230,6 +165,22 @@ class AttendanceSettings(models.Model):
     grace_period_minutes = models.IntegerField(default=15)
     minimum_hours_full_day = models.DecimalField(max_digits=4, decimal_places=2, default=8.00)
     minimum_hours_half_day = models.DecimalField(max_digits=4, decimal_places=2, default=4.00)
+
+    # ── Office GPS location (used for IN_OFFICE geofence check) ──────────────
+    office_latitude = models.DecimalField(
+        max_digits=9, decimal_places=6, null=True, blank=True,
+        help_text="Office latitude – set this to enable geofence enforcement"
+    )
+    office_longitude = models.DecimalField(
+        max_digits=9, decimal_places=6, null=True, blank=True,
+        help_text="Office longitude – set this to enable geofence enforcement"
+    )
+    office_radius_meters = models.IntegerField(
+        default=100,
+        help_text="Allowed check-in/out radius in metres for IN_OFFICE users"
+    )
+    # ─────────────────────────────────────────────────────────────────────────
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     

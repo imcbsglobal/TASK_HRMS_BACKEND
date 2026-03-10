@@ -32,6 +32,16 @@ class User(AbstractBaseUser, PermissionsMixin):
     profile_image = models.ImageField(upload_to='profile_images/', blank=True, null=True)
     is_active     = models.BooleanField(default=True)
     is_staff      = models.BooleanField(default=False)
+
+    WORK_LOCATION_CHOICES = (
+        ('IN_OFFICE',     'In Office'),
+        ('OUT_OF_OFFICE', 'Out of Office'),
+    )
+    work_location = models.CharField(
+        max_length=20,
+        choices=WORK_LOCATION_CHOICES,
+        default='IN_OFFICE',
+    )
     
     # WARNING: This field stores plain-text passwords - ONLY for development!
     # Remove this in production and use password reset functionality instead
