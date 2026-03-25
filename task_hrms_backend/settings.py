@@ -56,6 +56,7 @@ INSTALLED_APPS = [
     'master',
     'attendance',
     'payroll',
+    'watsapp_config',
 ]
 
 MIDDLEWARE = [

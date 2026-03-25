@@ -26,7 +26,7 @@ class Employee(models.Model):
 
     # Basic Details
     first_name = models.CharField(max_length=100)
-    last_name = models.CharField(max_length=100)
+    last_name = models.CharField(max_length=100, blank=True, default='')
     email = models.EmailField()
     phone = models.CharField(max_length=20, blank=True)
     profile_image = models.ImageField(upload_to='employee_images/', null=True, blank=True)
@@ -77,6 +77,65 @@ class Employee(models.Model):
             ('current', 'Current')
         ],
         blank=True
+    )
+
+    # ── PF (Provident Fund) Details ──────────────────────────────────────────
+    pf_enabled = models.BooleanField(default=False)
+    pf_number = models.CharField(max_length=50, blank=True)
+    pf_contribution_type = models.CharField(
+        max_length=20,
+        choices=[
+            ('percentage', 'Percentage of Basic'),
+            ('fixed', 'Fixed Amount'),
+        ],
+        default='percentage',
+        blank=True
+    )
+    employee_pf_contribution = models.DecimalField(
+        max_digits=6, decimal_places=2, default=12.00,
+        help_text="Employee PF contribution percentage or fixed amount"
+    )
+    employer_pf_contribution = models.DecimalField(
+        max_digits=6, decimal_places=2, default=12.00,
+        help_text="Employer PF contribution percentage or fixed amount"
+    )
+
+    # ── Overtime Settings ─────────────────────────────────────────────────────
+    overtime_enabled = models.BooleanField(default=False)
+    overtime_rate_type = models.CharField(
+        max_length=20,
+        choices=[
+            ('multiplier', 'Multiplier (e.g. 1.5x)'),
+            ('fixed',      'Fixed Amount per Hour'),
+        ],
+        default='multiplier',
+        blank=True
+    )
+    overtime_rate = models.DecimalField(
+        max_digits=6, decimal_places=2, default=1.50,
+        help_text="Overtime multiplier (e.g. 1.5) or fixed hourly rate"
+    )
+    max_overtime_hours_per_month = models.DecimalField(
+        max_digits=5, decimal_places=1, default=40.0,
+        help_text="Maximum allowed overtime hours per month"
+    )
+
+    # ── Shift Details ─────────────────────────────────────────────────────────
+    SHIFT_CHOICES = [
+        ('general',   'General  (9 AM – 6 PM)'),
+        ('morning',   'Morning  (6 AM – 2 PM)'),
+        ('afternoon', 'Afternoon (2 PM – 10 PM)'),
+        ('night',     'Night    (10 PM – 6 AM)'),
+        ('custom',    'Custom'),
+    ]
+    shift_type = models.CharField(
+        max_length=20, choices=SHIFT_CHOICES, default='general', blank=True
+    )
+    shift_start_time = models.TimeField(null=True, blank=True)
+    shift_end_time   = models.TimeField(null=True, blank=True)
+    weekly_off_days  = models.CharField(
+        max_length=100, blank=True, default='Saturday,Sunday',
+        help_text="Comma-separated off days, e.g. 'Saturday,Sunday'"
     )
 
     # Custom fields stored as JSON
@@ -153,3 +212,33 @@ class CustomFieldDefinition(models.Model):
         if self.field_options:
             return [opt.strip() for opt in self.field_options.split(',')]
         return []
+
+class EmployeeAsset(models.Model):
+    CONDITION_CHOICES = [
+        ('new', 'New'),
+        ('good', 'Good'),
+        ('fair', 'Fair'),
+        ('damaged', 'Damaged'),
+    ]
+    STATUS_CHOICES = [
+        ('assigned', 'Assigned'),
+        ('returned', 'Returned'),
+        ('lost', 'Lost'),
+    ]
+
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='assets')
+    asset_name = models.CharField(max_length=200)
+    asset_tag = models.CharField(max_length=100, blank=True)
+    category = models.CharField(max_length=100, blank=True)
+    serial_number = models.CharField(max_length=100, blank=True)
+    condition = models.CharField(max_length=20, choices=CONDITION_CHOICES, default='good')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='assigned')
+    assigned_date = models.DateField()
+    return_date = models.DateField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.asset_name} → {self.employee}"

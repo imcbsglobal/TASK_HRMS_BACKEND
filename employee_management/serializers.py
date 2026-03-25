@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Employee, Department, CustomFieldDefinition
+from .models import Employee, Department, CustomFieldDefinition, EmployeeAsset
 
 
 class DepartmentSerializer(serializers.ModelSerializer):
@@ -69,9 +69,23 @@ class EmployeeSerializer(serializers.ModelSerializer):
             # Bank Details
             'bank_name', 'account_number', 'account_holder_name',
             'ifsc_code', 'branch_name', 'account_type',
+            # PF Details
+            'pf_enabled', 'pf_number', 'pf_contribution_type',
+            'employee_pf_contribution', 'employer_pf_contribution',
+            # Overtime Settings
+            'overtime_enabled', 'overtime_rate_type', 'overtime_rate',
+            'max_overtime_hours_per_month',
+            # Shift Details
+            'shift_type', 'shift_start_time', 'shift_end_time', 'weekly_off_days',
             # Custom Fields
             'custom_fields',
             # Timestamps
             'created_at', 'updated_at'
         ]
         read_only_fields = ['employee_id', 'created_at', 'updated_at', 'department_name', 'candidate_id']
+
+class EmployeeAssetSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EmployeeAsset
+        fields = '__all__'
+        read_only_fields = ['created_at', 'updated_at']

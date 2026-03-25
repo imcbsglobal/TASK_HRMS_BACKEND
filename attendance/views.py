@@ -1,4 +1,5 @@
 from django.shortcuts import render
+from django.contrib.auth import get_user_model
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -96,6 +97,97 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             'attendance': AttendanceSerializer(attendance).data
         }, status=status.HTTP_200_OK)
     
+    @action(detail=False, methods=['post'], url_path='manual-mark')
+    def manual_mark(self, request):
+        """
+        Admin-only: manually create or update an attendance record for any user on any date.
+        POST /attendance/manual-mark/
+        Body: { user_id, date (YYYY-MM-DD), status, check_in_time (HH:MM, optional),
+                check_out_time (HH:MM, optional), notes (optional) }
+        """
+        admin = request.user
+        is_admin = (
+            admin.is_staff or admin.is_superuser or
+            getattr(admin, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+        )
+        if not is_admin:
+            return Response({'error': 'Only admins can manually mark attendance.'}, status=status.HTTP_403_FORBIDDEN)
+
+        user_id      = request.data.get('user_id')
+        date_str     = request.data.get('date')
+        att_status   = request.data.get('status')
+        check_in_str = request.data.get('check_in_time')   # "HH:MM"
+        check_out_str= request.data.get('check_out_time')  # "HH:MM"
+        notes        = request.data.get('notes', '')
+
+        if not user_id or not date_str or not att_status:
+            return Response({'error': 'user_id, date and status are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if att_status not in ['present', 'absent', 'half_day', 'late', 'leave']:
+            return Response({'error': 'Invalid status.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        User = get_user_model()
+        try:
+            target_user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            att_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response({'error': 'Invalid date format. Use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Build datetime objects for check-in / check-out if provided
+        ist = pytz.timezone('Asia/Kolkata')
+        check_in_dt = check_out_dt = None
+        if check_in_str:
+            try:
+                h, m = map(int, check_in_str.split(':'))
+                check_in_dt = ist.localize(datetime(att_date.year, att_date.month, att_date.day, h, m))
+            except Exception:
+                return Response({'error': 'Invalid check_in_time. Use HH:MM.'}, status=status.HTTP_400_BAD_REQUEST)
+        if check_out_str:
+            try:
+                h, m = map(int, check_out_str.split(':'))
+                check_out_dt = ist.localize(datetime(att_date.year, att_date.month, att_date.day, h, m))
+            except Exception:
+                return Response({'error': 'Invalid check_out_time. Use HH:MM.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        attendance, created = Attendance.objects.get_or_create(
+            user=target_user,
+            date=att_date,
+            defaults={
+                'status': att_status,
+                'check_in_time': check_in_dt,
+                'check_out_time': check_out_dt,
+                'notes': notes,
+                'is_verified': True,
+                'verified_by': admin,
+                'verified_at': timezone.now(),
+            }
+        )
+        if not created:
+            attendance.status       = att_status
+            attendance.is_verified  = True
+            attendance.verified_by  = admin
+            attendance.verified_at  = timezone.now()
+            attendance.notes        = notes
+            if check_in_dt  is not None: attendance.check_in_time  = check_in_dt
+            if check_out_dt is not None: attendance.check_out_time = check_out_dt
+            attendance.save(update_fields=[
+                'status', 'is_verified', 'verified_by', 'verified_at',
+                'notes', 'check_in_time', 'check_out_time', 'updated_at'
+            ])
+
+        if attendance.check_in_time and attendance.check_out_time:
+            attendance.calculate_hours()
+            attendance.save(update_fields=['total_hours'])
+
+        return Response({
+            'message': f'Attendance {"created" if created else "updated"} successfully.',
+            'attendance': AttendanceSerializer(attendance).data,
+        }, status=status.HTTP_200_OK)
+
     @action(detail=False, methods=['post'], url_path='check-in')
     def check_in(self, request):
         serializer = CheckInSerializer(data=request.data, context={'request': request})

@@ -6,7 +6,7 @@ from django.db.models import Q, Sum
 from django.utils import timezone
 from datetime import datetime
 import calendar
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from .models import Payroll
 from .serializers import PayrollSerializer, PayrollDetailSerializer, PayrollCalculateSerializer
@@ -26,50 +26,44 @@ def _get_leave_type_breakdown(employee, year, month):
     """
     from login.models import User
     from datetime import date
-    
+
     leave_breakdown = {
-        'sick_leave': {'count': 0, 'days': 0, 'label': 'Sick Leave'},
-        'casual_leave': {'count': 0, 'days': 0, 'label': 'Casual Leave'},
-        'annual_leave': {'count': 0, 'days': 0, 'label': 'Annual Leave'},
+        'sick_leave':      {'count': 0, 'days': 0, 'label': 'Sick Leave'},
+        'casual_leave':    {'count': 0, 'days': 0, 'label': 'Casual Leave'},
+        'annual_leave':    {'count': 0, 'days': 0, 'label': 'Annual Leave'},
         'maternity_leave': {'count': 0, 'days': 0, 'label': 'Maternity Leave'},
         'paternity_leave': {'count': 0, 'days': 0, 'label': 'Paternity Leave'},
-        'unpaid_leave': {'count': 0, 'days': 0, 'label': 'Unpaid Leave'},
-        'other_leave': {'count': 0, 'days': 0, 'label': 'Other Leave'},
+        'unpaid_leave':    {'count': 0, 'days': 0, 'label': 'Unpaid Leave'},
+        'other_leave':     {'count': 0, 'days': 0, 'label': 'Other Leave'},
     }
-    
+
     try:
         user = User.objects.filter(email=employee.email).first()
         if not user:
             return leave_breakdown
-            
-        # Get all approved leave requests that fall within this month
+
         first_day = date(year, month, 1)
-        last_day = date(year, month, 31) if month in [1, 3, 5, 7, 8, 10, 12] else (
-            date(year, month, 30) if month in [4, 6, 9, 11] else 
-            date(year, month, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28)
-        )
-        
+        last_day  = date(year, month, calendar.monthrange(year, month)[1])
+
         leave_requests = LeaveRequest.objects.filter(
             user=user,
             status='approved',
             start_date__lte=last_day,
-            end_date__gte=first_day
+            end_date__gte=first_day,
         )
-        
+
         for leave_req in leave_requests:
-            # Calculate overlapping days in current month
-            actual_start = max(leave_req.start_date, first_day)
-            actual_end = min(leave_req.end_date, last_day)
-            days_in_month = (actual_end - actual_start).days + 1
-            
+            actual_start   = max(leave_req.start_date, first_day)
+            actual_end     = min(leave_req.end_date,   last_day)
+            days_in_month  = (actual_end - actual_start).days + 1
             leave_type_key = f"{leave_req.leave_type}_leave"
             if leave_type_key in leave_breakdown:
                 leave_breakdown[leave_type_key]['count'] += 1
-                leave_breakdown[leave_type_key]['days'] += days_in_month
-            
+                leave_breakdown[leave_type_key]['days']  += days_in_month
+
     except Exception as e:
         print(f"Error calculating leave breakdown: {e}")
-    
+
     return leave_breakdown
 
 
@@ -77,35 +71,22 @@ def _get_attendance_summary(employee, year, month, total_days):
     """
     Match Employee → auth User by email, then count every attendance status
     for the given month.
-
-    Returned dict keys
-    ──────────────────
-    present_days  – fully present (checked in + out, no issues)
-    absent_days   – no check-in at all
-    late_days     – arrived late (approved late-arrival request)
-    half_days     – checked in but no check-out
-    leave_days    – on approved leave
-    working_days  – present + late + half_day  (physically attended office)
-    paid_days     – present + late + leave      (no salary deduction)
-    leave_breakdown – detailed breakdown of each leave type
     """
     summary = {
-        'present_days': 0,
-        'absent_days':  0,
-        'late_days':    0,
-        'half_days':    0,
-        'leave_days':   0,
-        'working_days': 0,
-        'paid_days':    0,
+        'present_days':   0,
+        'absent_days':    0,
+        'late_days':      0,
+        'half_days':      0,
+        'leave_days':     0,
+        'working_days':   0,
+        'paid_days':      0,
         'leave_breakdown': {},
     }
     try:
         from login.models import User
         user = User.objects.filter(email=employee.email).first()
         if user:
-            att_qs = Attendance.objects.filter(
-                user=user, date__year=year, date__month=month,
-            )
+            att_qs = Attendance.objects.filter(user=user, date__year=year, date__month=month)
             summary['present_days'] = att_qs.filter(status='present').count()
             summary['absent_days']  = att_qs.filter(status='absent').count()
             summary['late_days']    = att_qs.filter(status='late').count()
@@ -113,67 +94,167 @@ def _get_attendance_summary(employee, year, month, total_days):
             summary['leave_days']   = att_qs.filter(status='leave').count()
             summary['working_days'] = summary['present_days'] + summary['late_days'] + summary['half_days']
             summary['paid_days']    = summary['present_days'] + summary['late_days'] + summary['leave_days']
-            
-            # Get detailed leave breakdown
             summary['leave_breakdown'] = _get_leave_type_breakdown(employee, year, month)
         else:
-            # No linked user – treat all days as paid to avoid incorrect deductions
-            summary['present_days'] = total_days
-            summary['working_days'] = total_days
-            summary['paid_days']    = total_days
+            summary['present_days']    = total_days
+            summary['working_days']    = total_days
+            summary['paid_days']       = total_days
             summary['leave_breakdown'] = _get_leave_type_breakdown(employee, year, month)
     except Exception:
-        summary['present_days'] = total_days
-        summary['working_days'] = total_days
-        summary['paid_days']    = total_days
+        summary['present_days']    = total_days
+        summary['working_days']    = total_days
+        summary['paid_days']       = total_days
         summary['leave_breakdown'] = {}
     return summary
 
 
 def _calc_att_deduction(basic_salary, total_days, absent_days, half_days):
     """
-    Deduction formula
-    ─────────────────
     per_day_salary   = basic_salary / total_days_in_month
     absent_deduction = absent_days              × per_day_salary
     half_deduction   = half_days   × 0.5        × per_day_salary
-    total_deduction  = absent_deduction + half_deduction
-
-    Late days  → no deduction (treated as present)
-    Leave days → no deduction (treated as paid leave)
     """
     basic   = Decimal(str(basic_salary))
     divisor = Decimal(str(total_days)) if total_days else Decimal('1')
-    per_day = (basic / divisor).quantize(Decimal('0.01'))
+    per_day = (basic / divisor).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
     deduct  = (
-        (Decimal(str(absent_days)) + Decimal(str(half_days)) * Decimal('0.5'))
-        * per_day
-    ).quantize(Decimal('0.01'))
+        (Decimal(str(absent_days)) + Decimal(str(half_days)) * Decimal('0.5')) * per_day
+    ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
     return per_day, deduct
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PF & OVERTIME AUTO-COMPUTE
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _calc_pf_amount(employee):
+    """
+    Compute the employee's PF contribution for this payroll period.
+    Returns (amount: Decimal, detail: dict) or (Decimal('0'), None) if PF disabled.
+    """
+    if not employee.pf_enabled:
+        return Decimal('0'), None
+
+    basic   = Decimal(str(employee.salary))
+    contrib = Decimal(str(employee.employee_pf_contribution))
+
+    if employee.pf_contribution_type == 'fixed':
+        amount = contrib
+        label  = f"Fixed ₹{contrib}"
+    else:
+        # percentage of basic
+        amount = (basic * contrib / Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        label  = f"{contrib}% of Basic"
+
+    return amount, {
+        'source':           'auto_pf',
+        'name':             'Provident Fund (Employee)',
+        'amount':           str(amount),
+        'description':      f"Auto-computed: {label}",
+        'pf_number':        employee.pf_number or '',
+        'contribution_type': employee.pf_contribution_type,
+        'rate':             str(contrib),
+    }
+
+
+def _calc_overtime_amount(employee, total_days_in_month):
+    """
+    Compute overtime amount based on the employee's overtime settings.
+    Returns (amount: Decimal, detail: dict) or (Decimal('0'), None) if OT disabled.
+    """
+    if not employee.overtime_enabled:
+        return Decimal('0'), None
+
+    basic    = Decimal(str(employee.salary))
+    rate     = Decimal(str(employee.overtime_rate))
+    max_hrs  = Decimal(str(employee.max_overtime_hours_per_month))
+
+    if max_hrs <= 0:
+        return Decimal('0'), None
+
+    if employee.overtime_rate_type == 'fixed':
+        # fixed hourly rate × max hours
+        amount = (rate * max_hrs).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        label  = f"₹{rate}/hr × {max_hrs} hrs"
+    else:
+        # multiplier: hourly_rate = basic / (days * 8) × multiplier × hours
+        hours_in_month = Decimal(str(total_days_in_month)) * Decimal('8')
+        hourly_rate    = basic / hours_in_month
+        amount         = (hourly_rate * rate * max_hrs).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        label          = f"{rate}x multiplier × {max_hrs} hrs"
+
+    return amount, {
+        'source':      'auto_overtime',
+        'name':        'Overtime',
+        'amount':      str(amount),
+        'description': f"Auto-computed: {label}",
+        'rate_type':   employee.overtime_rate_type,
+        'rate':        str(rate),
+        'max_hours':   str(max_hrs),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CENTRAL PAYROLL BUILDER
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _build_payroll_dict(employee, year, month):
     """
     Central helper used by both employee_data and calculate_payroll.
     Returns a complete dict ready for JSON serialisation.
+
+    Auto-includes PF and Overtime allowances from employee settings on top of
+    any manually created Allowance records in the DB.
     """
     total_days   = calendar.monthrange(year, month)[1]
     basic_salary = employee.salary
 
-    att        = _get_attendance_summary(employee, year, month, total_days)
+    # ── Attendance ────────────────────────────────────────────────────────────
+    att = _get_attendance_summary(employee, year, month, total_days)
     per_day, att_deduction = _calc_att_deduction(
         basic_salary, total_days, att['absent_days'], att['half_days']
     )
 
-    allowances = Allowance.objects.filter(employee=employee, year=year, month=month, is_active=True)
-    deductions = Deduction.objects.filter(employee=employee, year=year, month=month, is_active=True)
-    total_allowances        = allowances.aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
-    total_manual_deductions = deductions.aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
-
-    total_deductions = att_deduction + Decimal(str(total_manual_deductions))
-    net_salary = (
-        Decimal(str(basic_salary)) + Decimal(str(total_allowances)) - total_deductions
+    # ── Manual allowances & deductions from DB ────────────────────────────────
+    db_allowances = Allowance.objects.filter(
+        employee=employee, year=year, month=month, is_active=True
     )
+    db_deductions = Deduction.objects.filter(
+        employee=employee, year=year, month=month, is_active=True
+    )
+
+    db_allowances_total = db_allowances.aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
+    total_manual_deductions = db_deductions.aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
+
+    # ── Auto-compute PF & Overtime ────────────────────────────────────────────
+    pf_amount,  pf_detail  = _calc_pf_amount(employee)
+    ot_amount,  ot_detail  = _calc_overtime_amount(employee, total_days)
+
+    auto_allowances_total = pf_amount + ot_amount
+
+    # ── Totals ────────────────────────────────────────────────────────────────
+    total_allowances = Decimal(str(db_allowances_total)) + auto_allowances_total
+    total_deductions = att_deduction + Decimal(str(total_manual_deductions))
+
+    net_salary = (
+        Decimal(str(basic_salary)) + total_allowances - total_deductions
+    ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+    # ── Build allowances list (manual + auto) ─────────────────────────────────
+    allowances_list = [
+        {
+            'id':          a.id,
+            'name':        a.allowance_name,
+            'amount':      str(a.amount),
+            'description': a.description,
+            'source':      'manual',
+        }
+        for a in db_allowances
+    ]
+    if pf_detail:
+        allowances_list.append(pf_detail)
+    if ot_detail:
+        allowances_list.append(ot_detail)
 
     return {
         'basic_salary':            str(basic_salary),
@@ -184,6 +265,11 @@ def _build_payroll_dict(employee, year, month):
         'net_salary':              str(net_salary),
         'total_days_in_month':     total_days,
         'total_working_days':      att['working_days'],
+        # Breakdown for UI
+        'db_allowances_total':     str(db_allowances_total),
+        'pf_amount':               str(pf_amount),
+        'overtime_amount':         str(ot_amount),
+        'auto_allowances_total':   str(auto_allowances_total),
         'attendance': {
             'present_days':         att['present_days'],
             'absent_days':          att['absent_days'],
@@ -196,14 +282,28 @@ def _build_payroll_dict(employee, year, month):
             'attendance_deduction': str(att_deduction),
             'leave_breakdown':      att.get('leave_breakdown', {}),
         },
-        'allowances': [
-            {'id': a.id, 'name': a.allowance_name, 'amount': str(a.amount), 'description': a.description}
-            for a in allowances
-        ],
+        'allowances': allowances_list,
         'deductions': [
-            {'id': d.id, 'name': d.deduction_name, 'amount': str(d.amount), 'description': d.description}
-            for d in deductions
+            {
+                'id':          d.id,
+                'name':        d.deduction_name,
+                'amount':      str(d.amount),
+                'description': d.description,
+            }
+            for d in db_deductions
         ],
+        # Employee PF & OT settings (for UI display)
+        'employee_settings': {
+            'pf_enabled':                   employee.pf_enabled,
+            'pf_number':                    employee.pf_number,
+            'pf_contribution_type':         employee.pf_contribution_type,
+            'employee_pf_contribution':     str(employee.employee_pf_contribution),
+            'employer_pf_contribution':     str(employee.employer_pf_contribution),
+            'overtime_enabled':             employee.overtime_enabled,
+            'overtime_rate_type':           employee.overtime_rate_type,
+            'overtime_rate':                str(employee.overtime_rate),
+            'max_overtime_hours_per_month': str(employee.max_overtime_hours_per_month),
+        },
     }
 
 
@@ -234,10 +334,10 @@ class PayrollViewSet(viewsets.ModelViewSet):
             'employee', 'employee__department', 'processed_by'
         ).all()
         p = self.request.query_params
-        if p.get('employee'):    qs = qs.filter(employee_id=p['employee'])
-        if p.get('year'):        qs = qs.filter(year=p['year'])
-        if p.get('month'):       qs = qs.filter(month=p['month'])
-        if p.get('status'):      qs = qs.filter(status=p['status'])
+        if p.get('employee'): qs = qs.filter(employee_id=p['employee'])
+        if p.get('year'):     qs = qs.filter(year=p['year'])
+        if p.get('month'):    qs = qs.filter(month=p['month'])
+        if p.get('status'):   qs = qs.filter(status=p['status'])
         return qs
 
     def get_serializer_class(self):
@@ -245,12 +345,10 @@ class PayrollViewSet(viewsets.ModelViewSet):
             return PayrollDetailSerializer
         return PayrollSerializer
 
-    # ── POST /api/payroll/calculate/ ──────────────────────────────────────────
+    # ── POST /api/payroll/calculate/ ─────────────────────────────────────────
     @action(detail=False, methods=['post'], url_path='calculate')
     def calculate_payroll(self, request):
-        """
-        Preview-only calculation (nothing is saved to DB).
-        """
+        """Preview-only calculation (nothing is saved to DB)."""
         ser = PayrollCalculateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
@@ -274,14 +372,10 @@ class PayrollViewSet(viewsets.ModelViewSet):
         })
         return Response(data, status=status.HTTP_200_OK)
 
-    # ── GET /api/payroll/employee-data/ ───────────────────────────────────────
+    # ── GET /api/payroll/employee-data/ ──────────────────────────────────────
     @action(detail=False, methods=['get'], url_path='employee-data')
     def employee_data(self, request):
-        """
-        Full payroll + attendance breakdown for Payroll.jsx.
-
-        Query params: employee_id, year, month
-        """
+        """Full payroll + attendance breakdown for Payroll.jsx."""
         employee_id = request.query_params.get('employee_id')
         year        = request.query_params.get('year')
         month       = request.query_params.get('month')
@@ -323,10 +417,15 @@ class PayrollViewSet(viewsets.ModelViewSet):
             'net_salary':               data['net_salary'],
             'total_days_in_month':      data['total_days_in_month'],
             'total_working_days':       data['total_working_days'],
+            # PF / OT breakdown
+            'pf_amount':                data['pf_amount'],
+            'overtime_amount':          data['overtime_amount'],
+            'db_allowances_total':      data['db_allowances_total'],
+            'auto_allowances_total':    data['auto_allowances_total'],
         }
         return Response(data, status=status.HTTP_200_OK)
 
-    # ── POST /api/payroll/{id}/process/ ───────────────────────────────────────
+    # ── POST /api/payroll/{id}/process/ ──────────────────────────────────────
     @action(detail=True, methods=['post'], url_path='process')
     def process_payroll(self, request, pk=None):
         payroll = self.get_object()
@@ -341,7 +440,7 @@ class PayrollViewSet(viewsets.ModelViewSet):
         payroll.save()
         return Response(PayrollDetailSerializer(payroll).data, status=status.HTTP_200_OK)
 
-    # ── POST /api/payroll/{id}/mark-paid/ ─────────────────────────────────────
+    # ── POST /api/payroll/{id}/mark-paid/ ────────────────────────────────────
     @action(detail=True, methods=['post'], url_path='mark-paid')
     def mark_paid(self, request, pk=None):
         payroll = self.get_object()

@@ -13,9 +13,6 @@ class Command(BaseCommand):
         # self.stdout.write(self.style.WARNING('Cleared existing menus'))
 
         # Define menus that match EXACTLY with Sidebar.jsx
-        # Sidebar has 6 menus: Dashboard, Employee Management, Interview Process,
-        # Attendance (2 children), User Management (2 children), Master (2 children)
-        # NOTE: Certificates has been REMOVED - it does not exist in Sidebar.jsx
         menus_data = [
             # 1. Dashboard — direct route, no children
             {
@@ -44,13 +41,31 @@ class Command(BaseCommand):
                 'order': 3,
                 'children': []
             },
-            # 4. Attendance — parent with 2 children (key: "attendance" in Sidebar.jsx)
+            # 4. Payroll — direct route, no children
+            {
+                'name': 'Payroll',
+                'slug': 'payroll',
+                'icon': '💰',
+                'route': '/payroll',
+                'order': 4,
+                'children': []
+            },
+            # 5. Offboarding — direct route, no children
+            {
+                'name': 'Offboarding',
+                'slug': 'offboarding',
+                'icon': '🚪',
+                'route': '/offboarding',
+                'order': 5,
+                'children': []
+            },
+            # 6. Attendance — parent with 2 children
             {
                 'name': 'Attendance',
                 'slug': 'attendance',
                 'icon': '⏰',
-                'route': None,  # Parent menu has no route, only children do
-                'order': 4,
+                'route': None,
+                'order': 6,
                 'children': [
                     {
                         'name': 'Admin View',
@@ -68,13 +83,13 @@ class Command(BaseCommand):
                     },
                 ]
             },
-            # 5. User Management — parent with 2 children (key: "user-management" in Sidebar.jsx)
+            # 7. User Management — parent with 2 children
             {
                 'name': 'User Management',
                 'slug': 'user-management',
                 'icon': '👤',
-                'route': None,  # Parent menu has no route, only children do
-                'order': 5,
+                'route': None,
+                'order': 7,
                 'children': [
                     {
                         'name': 'User List',
@@ -92,13 +107,13 @@ class Command(BaseCommand):
                     },
                 ]
             },
-            # 6. Master — parent with 2 children (key: "master" in Sidebar.jsx)
+            # 8. Master — parent with 6 children
             {
                 'name': 'Master',
                 'slug': 'master',
                 'icon': '⚙️',
-                'route': None,  # Parent menu has no route, only children do
-                'order': 6,
+                'route': None,
+                'order': 8,
                 'children': [
                     {
                         'name': 'Department',
@@ -114,7 +129,53 @@ class Command(BaseCommand):
                         'route': '/master/leave-type',
                         'order': 2
                     },
+                    {
+                        'name': 'Allowance',
+                        'slug': 'allowance',
+                        'icon': '💵',
+                        'route': '/master/allowance',
+                        'order': 3
+                    },
+                    {
+                        'name': 'Deduction',
+                        'slug': 'deduction',
+                        'icon': '📉',
+                        'route': '/master/deduction',
+                        'order': 4
+                    },
+                    {
+                        'name': 'Holiday',
+                        'slug': 'holiday',
+                        'icon': '🎉',
+                        'route': '/master/holiday',
+                        'order': 5
+                    },
+                    {
+                        'name': 'Announcements',
+                        'slug': 'announcements',
+                        'icon': '📢',
+                        'route': '/master/announcements',
+                        'order': 6
+                    },
                 ]
+            },
+            # 9. WhatsApp Config — direct route, no children
+            {
+                'name': 'WhatsApp Config',
+                'slug': 'whatsapp-config',
+                'icon': '💬',
+                'route': '/whatsapp-config',
+                'order': 9,
+                'children': []
+            },
+            # 10. Company Settings — direct route, no children
+            {
+                'name': 'Company Settings',
+                'slug': 'company-settings',
+                'icon': '🏭',
+                'route': '/company-settings',
+                'order': 10,
+                'children': []
             },
         ]
 
@@ -162,9 +223,17 @@ class Command(BaseCommand):
         self.stdout.write('  • /dashboard')
         self.stdout.write('  • /employees')
         self.stdout.write('  • /interviews')
+        self.stdout.write('  • /payroll')
+        self.stdout.write('  • /offboarding')
         self.stdout.write('  • /attendance/admin')
         self.stdout.write('  • /attendance/user')
         self.stdout.write('  • /user-management/user-list')
         self.stdout.write('  • /user-management/user-control')
         self.stdout.write('  • /master/department')
         self.stdout.write('  • /master/leave-type')
+        self.stdout.write('  • /master/allowance')
+        self.stdout.write('  • /master/deduction')
+        self.stdout.write('  • /master/holiday')
+        self.stdout.write('  • /master/announcements')
+        self.stdout.write('  • /whatsapp-config')
+        self.stdout.write('  • /company-settings')
