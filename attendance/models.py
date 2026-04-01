@@ -190,3 +190,50 @@ class AttendanceSettings(models.Model):
     
     def __str__(self):
         return f"Attendance Settings - {self.office_start_time} to {self.office_end_time}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ADD THIS CLASS TO YOUR EXISTING models.py
+# Place it after the LateArrivalRequest class
+# ─────────────────────────────────────────────────────────────────────────────
+
+class EarlyDepartureRequest(models.Model):
+    STATUS_CHOICES = [
+        ('pending',   'Pending'),
+        ('approved',  'Approved'),
+        ('rejected',  'Rejected'),
+        ('cancelled', 'Cancelled'),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='early_departure_requests',
+    )
+    date = models.DateField()
+    expected_departure_time = models.TimeField(
+        help_text="Planned early departure time (HH:MM)"
+    )
+    reason = models.TextField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='reviewed_early_departures',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    admin_notes = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Early Departure Request'
+        verbose_name_plural = 'Early Departure Requests'
+        unique_together = ['user', 'date']   # one request per day per user
+
+    def __str__(self):
+        return (
+            f"{self.user.username} – {self.date} "
+            f"@ {self.expected_departure_time} ({self.status})"
+        )

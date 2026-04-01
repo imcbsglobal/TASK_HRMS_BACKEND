@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from calendar import monthrange
 import pytz
 
-from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest
+from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest,EarlyDepartureRequest
 from .geofence import validate_geofence
 from .serializers import (
     AttendanceSerializer, CheckInSerializer, CheckOutSerializer,
@@ -19,6 +19,8 @@ from .serializers import (
     LeaveApprovalSerializer,
     LateArrivalRequestSerializer, CreateLateArrivalRequestSerializer,
     LateArrivalApprovalSerializer,
+    EarlyDepartureRequestSerializer, CreateEarlyDepartureRequestSerializer,  # ← ADD
+    EarlyDepartureApprovalSerializer,
 )
 
 
@@ -1037,3 +1039,220 @@ class AttendanceSettingsViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_200_OK)
+    
+# ─────────────────────────────────────────────────────────────────────────────
+# ADD TO YOUR EXISTING views.py
+#
+# 1. Add EarlyDepartureRequest to the models import:
+#    from .models import Attendance, AttendanceSettings, LeaveRequest,
+#                        LateArrivalRequest, EarlyDepartureRequest
+#
+# 2. Add these three serializers to the serializers import:
+#    EarlyDepartureRequestSerializer,
+#    CreateEarlyDepartureRequestSerializer,
+#    EarlyDepartureApprovalSerializer,
+#
+# 3. Paste the EarlyDepartureRequestViewSet class below (before or after
+#    LeaveRequestViewSet – order doesn't matter).
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EARLY DEPARTURE REQUEST VIEWSET
+# ─────────────────────────────────────────────────────────────────────────────
+
+class EarlyDepartureRequestViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing early departure requests.
+
+    Employees
+      POST   /attendance/early-departure-requests/         – submit a request
+      GET    /attendance/early-departure-requests/my-requests/  – own history
+      DELETE /attendance/early-departure-requests/{id}/    – cancel pending
+
+    Admins
+      GET    /attendance/early-departure-requests/         – all requests
+      GET    /attendance/early-departure-requests/pending/ – pending only
+      POST   /attendance/early-departure-requests/{id}/review/ – approve/reject
+      GET    /attendance/early-departure-requests/stats/   – counts by status
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    # ── Helpers ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_admin(user):
+        return (
+            user.is_staff or user.is_superuser or
+            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+        )
+
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return CreateEarlyDepartureRequestSerializer
+        if self.action == 'review':
+            return EarlyDepartureApprovalSerializer
+        return EarlyDepartureRequestSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = EarlyDepartureRequest.objects.select_related('user', 'reviewed_by')
+
+        if self._is_admin(user):
+            # Optional query-param filters for admins
+            status_filter = self.request.query_params.get('status')
+            user_filter   = self.request.query_params.get('user_id')
+            if status_filter:
+                qs = qs.filter(status=status_filter)
+            if user_filter:
+                qs = qs.filter(user_id=user_filter)
+            return qs
+
+        return qs.filter(user=user)
+
+    # ── Standard CRUD ──────────────────────────────────────────────────────
+
+    def create(self, request, *args, **kwargs):
+        """Submit a new early departure request."""
+        serializer = CreateEarlyDepartureRequestSerializer(
+            data=request.data, context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        instance = serializer.save(user=request.user)
+        return Response(
+            EarlyDepartureRequestSerializer(instance).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        """Users can cancel their own pending requests."""
+        instance = self.get_object()
+        if instance.user != request.user and not self._is_admin(request.user):
+            return Response(
+                {'error': 'You cannot cancel this request.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if instance.status != 'pending':
+            return Response(
+                {'error': 'Only pending requests can be cancelled.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        instance.status = 'cancelled'
+        instance.save(update_fields=['status', 'updated_at'])
+        return Response(
+            {'message': 'Early departure request cancelled.'},
+            status=status.HTTP_200_OK,
+        )
+
+    # ── Custom actions ─────────────────────────────────────────────────────
+
+    @action(detail=False, methods=['get'], url_path='my-requests')
+    def my_requests(self, request):
+        """Current user's own early departure requests."""
+        qs = EarlyDepartureRequest.objects.filter(
+            user=request.user
+        ).order_by('-created_at')
+        return Response(EarlyDepartureRequestSerializer(qs, many=True).data)
+
+    @action(detail=False, methods=['get'], url_path='pending')
+    def pending_requests(self, request):
+        """Admin-only: all pending early departure requests."""
+        if not self._is_admin(request.user):
+            return Response(
+                {'error': 'Only admins can view all pending requests.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        qs = (
+            EarlyDepartureRequest.objects
+            .filter(status='pending')
+            .select_related('user')
+            .order_by('-created_at')
+        )
+        return Response(EarlyDepartureRequestSerializer(qs, many=True).data)
+
+    @action(detail=False, methods=['get'], url_path='stats')
+    def stats(self, request):
+        """Admin-only: counts by status."""
+        if not self._is_admin(request.user):
+            return Response({'error': 'Admins only.'}, status=status.HTTP_403_FORBIDDEN)
+
+        return Response({
+            'total':     EarlyDepartureRequest.objects.count(),
+            'pending':   EarlyDepartureRequest.objects.filter(status='pending').count(),
+            'approved':  EarlyDepartureRequest.objects.filter(status='approved').count(),
+            'rejected':  EarlyDepartureRequest.objects.filter(status='rejected').count(),
+            'cancelled': EarlyDepartureRequest.objects.filter(status='cancelled').count(),
+        })
+
+    @action(detail=True, methods=['post'], url_path='review')
+    def review(self, request, pk=None):
+        """
+        Admin approves or rejects an early departure request.
+        On approval the corresponding Attendance record is marked
+        'half_day' and verified (if the employee left before half-day
+        threshold you may adjust the status logic below as needed).
+
+        Body: { "action": "approve"|"reject", "admin_notes": "..." }
+        """
+        if not self._is_admin(request.user):
+            return Response(
+                {'error': 'Only admins can review early departure requests.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = EarlyDepartureApprovalSerializer(
+            data=request.data, context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+
+        early_req = self.get_object()
+
+        if early_req.status != 'pending':
+            return Response(
+                {'error': f'Cannot review a request that is already "{early_req.status}".'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        action_type = serializer.validated_data['action']
+        admin_notes = serializer.validated_data.get('admin_notes', '')
+
+        if action_type == 'approve':
+            early_req.status = 'approved'
+            message = 'Early departure request approved successfully.'
+
+            # Update / create Attendance to reflect early departure (half_day)
+            attendance, created = Attendance.objects.get_or_create(
+                user=early_req.user,
+                date=early_req.date,
+                defaults={
+                    'status': 'half_day',
+                    'notes': f'Early departure approved – {early_req.reason}',
+                    'is_verified': True,
+                    'verified_by': request.user,
+                    'verified_at': timezone.now(),
+                },
+            )
+            if not created and not attendance.is_verified:
+                attendance.status      = 'half_day'
+                attendance.notes       = f'Early departure approved – {early_req.reason}'
+                attendance.is_verified = True
+                attendance.verified_by = request.user
+                attendance.verified_at = timezone.now()
+                attendance.save(update_fields=[
+                    'status', 'notes', 'is_verified',
+                    'verified_by', 'verified_at', 'updated_at',
+                ])
+        else:
+            early_req.status = 'rejected'
+            message = 'Early departure request rejected.'
+
+        early_req.reviewed_by  = request.user
+        early_req.reviewed_at  = timezone.now()
+        early_req.admin_notes  = admin_notes
+        early_req.save()
+
+        return Response({
+            'message': message,
+            'early_departure_request': EarlyDepartureRequestSerializer(early_req).data,
+        }, status=status.HTTP_200_OK)

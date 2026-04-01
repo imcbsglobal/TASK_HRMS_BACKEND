@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest
+from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest,EarlyDepartureRequest
 from django.utils import timezone
 from datetime import datetime, timedelta
 import pytz
@@ -403,3 +403,99 @@ class AttendanceSettingsSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at',
         ]
         read_only_fields = ['created_at', 'updated_at']
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ADD THESE CLASSES TO YOUR EXISTING serializers.py
+# 1. Add EarlyDepartureRequest to the import line at the top:
+#    from .models import Attendance, AttendanceSettings, LeaveRequest,
+#                        LateArrivalRequest, EarlyDepartureRequest
+# 2. Paste the three classes below after the LateArrivalApprovalSerializer
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EARLY DEPARTURE REQUEST SERIALIZERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class EarlyDepartureRequestSerializer(serializers.ModelSerializer):
+    """Full read serializer – used in list / detail views."""
+    user_name        = serializers.CharField(source='user.get_full_name', read_only=True)
+    user_username    = serializers.CharField(source='user.username',      read_only=True)
+    reviewed_by_name = serializers.CharField(
+        source='reviewed_by.get_full_name', read_only=True, allow_null=True
+    )
+    status_display   = serializers.CharField(source='get_status_display', read_only=True)
+    date_formatted   = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = EarlyDepartureRequest
+        fields = [
+            'id', 'user', 'user_name', 'user_username',
+            'date', 'date_formatted',
+            'expected_departure_time',
+            'reason', 'status', 'status_display',
+            'reviewed_by', 'reviewed_by_name', 'reviewed_at',
+            'admin_notes',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'user', 'status', 'reviewed_by', 'reviewed_at',
+            'created_at', 'updated_at',
+        ]
+
+    def get_date_formatted(self, obj):
+        return obj.date.strftime('%d %b %Y') if obj.date else None
+
+
+class CreateEarlyDepartureRequestSerializer(serializers.ModelSerializer):
+    """Write serializer – used when a user submits a new request."""
+
+    class Meta:
+        model  = EarlyDepartureRequest
+        fields = ['date', 'expected_departure_time', 'reason']
+
+    def validate_date(self, value):
+        from django.utils import timezone
+        today = timezone.now().date()
+        if value < today:
+            raise serializers.ValidationError(
+                "You cannot raise an early departure request for a past date."
+            )
+        return value
+
+    def validate(self, data):
+        user = self.context['request'].user
+        date = data.get('date')
+
+        existing = EarlyDepartureRequest.objects.filter(user=user, date=date).first()
+        if existing:
+            if existing.status == 'pending':
+                raise serializers.ValidationError(
+                    "You already have a pending early departure request for this date."
+                )
+            if existing.status == 'approved':
+                raise serializers.ValidationError(
+                    "An early departure request for this date has already been approved."
+                )
+            # Allow re-submission if previously cancelled or rejected
+            existing.delete()
+
+        return data
+
+
+class EarlyDepartureApprovalSerializer(serializers.Serializer):
+    """Admin approves or rejects an early departure request."""
+    action      = serializers.ChoiceField(choices=['approve', 'reject'])
+    admin_notes = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, data):
+        user = self.context['request'].user
+        is_admin = (
+            user.is_staff or user.is_superuser or
+            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+        )
+        if not is_admin:
+            raise serializers.ValidationError(
+                "Only admins can approve/reject early departure requests."
+            )
+        return data
