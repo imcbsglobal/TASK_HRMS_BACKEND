@@ -9,7 +9,10 @@ https://docs.djangoproject.com/en/6.0/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
+import os
+from dotenv import load_dotenv
 
+load_dotenv()
 from pathlib import Path
 from datetime import timedelta
 
@@ -35,7 +38,12 @@ SECRET_KEY = 'django-insecure-)g+t$d!!l4jfyy!jy6inw9w!b2wy7alnb8ft!lx=@#!5)#6wog
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [
+    'hrms.imcbs.com',
+    'www.hrms.imcbs.com',
+    'localhost',
+    '127.0.0.1'
+]
 
 
 # Application definition
@@ -110,11 +118,11 @@ WSGI_APPLICATION = 'task_hrms_backend.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'task_hrms_backend',
-        'USER': 'postgres',
-        'PASSWORD': '1234',
-        'HOST': 'localhost',
-        'PORT': '5432',
+        'NAME': os.getenv('DB_NAME'),
+        'USER': os.getenv('DB_USER'),
+        'PASSWORD': os.getenv('DB_PASSWORD'),
+        'HOST': os.getenv('DB_HOST'),
+        'PORT': os.getenv('DB_PORT'),
     }
 }
 
