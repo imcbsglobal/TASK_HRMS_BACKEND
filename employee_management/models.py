@@ -1,6 +1,21 @@
 from django.db import models
 from HR.models import Candidate
+import os
+from storages.backends.s3boto3 import S3Boto3Storage
 
+class R2EmployeeImageStorage(S3Boto3Storage):
+    bucket_name = os.getenv('CLOUDFLARE_R2_BUCKET', 'taskhrms')
+    access_key = os.getenv('CLOUDFLARE_R2_ACCESS_KEY')
+    secret_key = os.getenv('CLOUDFLARE_R2_SECRET_KEY')
+    endpoint_url = os.getenv('CLOUDFLARE_R2_BUCKET_ENDPOINT')
+    # Use custom domain without https:// to serve files
+    custom_domain = os.getenv('CLOUDFLARE_R2_PUBLIC_URL', '').replace('https://', '').replace('http://', '') if os.getenv('CLOUDFLARE_R2_PUBLIC_URL') else None
+    
+    file_overwrite = False
+    
+    # Optional: If you need to force public read
+    # custom_domain is effectively treating it as a CDN
+    default_acl = None
 
 class Department(models.Model):
     name = models.CharField(max_length=100, unique=True)
@@ -29,7 +44,7 @@ class Employee(models.Model):
     last_name = models.CharField(max_length=100, blank=True, default='')
     email = models.EmailField()
     phone = models.CharField(max_length=20, blank=True)
-    profile_image = models.ImageField(upload_to='employee_images/', null=True, blank=True)
+    profile_image = models.ImageField(storage=R2EmployeeImageStorage(), upload_to='employee_images/', null=True, blank=True)
 
     department = models.ForeignKey(
         Department,
@@ -242,3 +257,36 @@ class EmployeeAsset(models.Model):
 
     def __str__(self):
         return f"{self.asset_name} → {self.employee}"
+
+from django.db.models.signals import post_delete, pre_save
+from django.dispatch import receiver
+
+@receiver(post_delete, sender=Employee)
+def auto_delete_image_on_delete(sender, instance, **kwargs):
+    """
+    Deletes image from Cloudflare R2
+    when corresponding `Employee` object is deleted.
+    """
+    if instance.profile_image:
+        instance.profile_image.delete(save=False)
+
+@receiver(pre_save, sender=Employee)
+def auto_delete_image_on_change(sender, instance, **kwargs):
+    """
+    Deletes old image from Cloudflare R2
+    when corresponding `Employee` object is updated with a new image.
+    """
+    if not instance.pk:
+        return False
+
+    try:
+        old_employee = Employee.objects.get(pk=instance.pk)
+        old_file = old_employee.profile_image
+    except Employee.DoesNotExist:
+        return False
+
+    new_file = instance.profile_image
+    # If there is an old file and it doesn't match the new file
+    # This also covers when the image is cleared (new_file is None)
+    if old_file and old_file != new_file:
+        old_file.delete(save=False)

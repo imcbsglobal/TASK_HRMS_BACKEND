@@ -1,4 +1,15 @@
 from django.db import models
+import os
+from storages.backends.s3boto3 import S3Boto3Storage
+
+class R2HRStorage(S3Boto3Storage):
+    bucket_name = os.getenv('CLOUDFLARE_R2_BUCKET', 'taskhrms')
+    access_key = os.getenv('CLOUDFLARE_R2_ACCESS_KEY')
+    secret_key = os.getenv('CLOUDFLARE_R2_SECRET_KEY')
+    endpoint_url = os.getenv('CLOUDFLARE_R2_BUCKET_ENDPOINT')
+    custom_domain = os.getenv('CLOUDFLARE_R2_PUBLIC_URL', '').replace('https://', '').replace('http://', '') if os.getenv('CLOUDFLARE_R2_PUBLIC_URL') else None
+    file_overwrite = False
+    default_acl = None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -44,7 +55,7 @@ class Candidate(models.Model):
     education = models.CharField(max_length=200, blank=True)
     skills = models.JSONField(default=list)
 
-    cv = models.FileField(upload_to="cvs/")
+    cv = models.FileField(storage=R2HRStorage(), upload_to="cvs/")
     # status stores either a fixed key or a PipelineStage.key
     status = models.CharField(max_length=60, default="uploaded")
 
@@ -106,3 +117,25 @@ class OfferLetter(models.Model):
 
     def __str__(self):
         return f"Offer Letter - {self.candidate.name}"
+
+from django.db.models.signals import post_delete, pre_save
+from django.dispatch import receiver
+
+@receiver(post_delete, sender=Candidate)
+def auto_delete_cv_on_delete(sender, instance, **kwargs):
+    if instance.cv:
+        instance.cv.delete(save=False)
+
+@receiver(pre_save, sender=Candidate)
+def auto_delete_cv_on_change(sender, instance, **kwargs):
+    if not instance.pk:
+        return False
+    try:
+        old_candidate = Candidate.objects.get(pk=instance.pk)
+        old_file = old_candidate.cv
+    except Candidate.DoesNotExist:
+        return False
+    
+    new_file = instance.cv
+    if old_file and old_file != new_file:
+        old_file.delete(save=False)
