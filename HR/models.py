@@ -1,5 +1,6 @@
 from django.db import models
 import os
+from django.conf import settings
 from storages.backends.s3boto3 import S3Boto3Storage
 
 class R2HRStorage(S3Boto3Storage):
@@ -25,6 +26,16 @@ class PipelineStage(models.Model):
     key = models.SlugField(max_length=60, unique=True)   # e.g. "hr_round"
     title = models.CharField(max_length=100)              # e.g. "HR Round"
     order = models.PositiveSmallIntegerField(default=0)   # display order
+
+    # ── Tenant isolation ─────────────────────────────────────────────────────
+    admin_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='pipeline_stages',
+        limit_choices_to={'role': 'ADMIN'},
+    )
 
     class Meta:
         ordering = ["order", "id"]
@@ -58,6 +69,16 @@ class Candidate(models.Model):
     cv = models.FileField(storage=R2HRStorage(), upload_to="cvs/")
     # status stores either a fixed key or a PipelineStage.key
     status = models.CharField(max_length=60, default="uploaded")
+
+    # ── Tenant isolation ──────────────────────────────────────────────────────
+    admin_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='candidates',
+        limit_choices_to={'role': 'ADMIN'},
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
 

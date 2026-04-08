@@ -12,9 +12,12 @@ class AnnouncementSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'body', 'date', 'tag', 'tag_display',
             'icon', 'is_pinned', 'is_active',
-            'created_at', 'updated_at',
+            'created_at', 'updated_at', 'admin_owner',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'tag_display']
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
 
 
 class HolidaySerializer(serializers.ModelSerializer):
@@ -27,18 +30,18 @@ class HolidaySerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'date', 'type', 'type_display',
             'description', 'is_active', 'days_until',
-            'created_at', 'updated_at',
+            'created_at', 'updated_at', 'admin_owner',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'type_display', 'days_until']
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
 
     def get_days_until(self, obj):
         from django.utils import timezone
         today = timezone.now().date()
         delta = (obj.date - today).days
         return delta
-
-
-
 
 
 class LeaveTypeSerializer(serializers.ModelSerializer):
@@ -62,8 +65,12 @@ class LeaveTypeSerializer(serializers.ModelSerializer):
             'is_active',
             'created_at',
             'updated_at',
+            'admin_owner',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'category_display', 'payment_status_display']
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
 
 class AllowanceSerializer(serializers.ModelSerializer):
     """Serializer for Allowance model"""
@@ -87,8 +94,12 @@ class AllowanceSerializer(serializers.ModelSerializer):
             'is_active',
             'created_at',
             'updated_at',
+            'admin_owner',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'employee_name', 'month_display']
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
     
     def get_employee_details(self, obj):
         return {
@@ -122,8 +133,12 @@ class DeductionSerializer(serializers.ModelSerializer):
             'is_active',
             'created_at',
             'updated_at',
+            'admin_owner',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'employee_name', 'month_display']
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
     
     def get_employee_details(self, obj):
         return {

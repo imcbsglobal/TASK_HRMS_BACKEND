@@ -15,6 +15,20 @@ from .serializers import (
 User = get_user_model()
 
 
+# ---------------------------------------------------------------------------
+# Tenant helpers
+# ---------------------------------------------------------------------------
+
+def _get_admin_owner(user):
+    """
+    Return the ADMIN who owns the current request's tenant scope.
+    """
+    if getattr(user, 'role', None) == 'ADMIN':
+        return user
+    if getattr(user, 'role', None) == 'USER' and hasattr(user, 'admin_owner'):
+        return user.admin_owner
+    return None
+
 class IsAdminOrSuperAdmin(permissions.BasePermission):
     """
     Custom permission to only allow admin or super_admin users
@@ -43,7 +57,6 @@ class IsAdminOrSuperAdmin(permissions.BasePermission):
 from rest_framework.decorators import action
 
 class MenuViewSet(viewsets.ModelViewSet):
-    queryset = Menu.objects.filter(is_active=True)
     serializer_class = MenuSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -51,6 +64,27 @@ class MenuViewSet(viewsets.ModelViewSet):
         if self.action in ['list', 'retrieve', 'hierarchy']:
             return [permissions.IsAuthenticated()]
         return [IsAdminOrSuperAdmin()]
+
+    def get_queryset(self):
+        qs = Menu.objects.filter(is_active=True)
+        user = self.request.user
+        if getattr(user, 'role', None) == 'SUPER_ADMIN':
+            return qs
+        
+        admin = _get_admin_owner(user)
+        if admin:
+            # Show menus owned by this admin OR system-wide menus (admin_owner is null)
+            return qs.filter(Q(admin_owner=admin) | Q(admin_owner__isnull=True))
+        
+        return qs.none()
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        if getattr(user, 'role', None) != 'SUPER_ADMIN':
+            admin = _get_admin_owner(user)
+            serializer.save(admin_owner=admin)
+        else:
+            serializer.save()
 
     @action(detail=False, methods=['get'], url_path='hierarchy')
     def hierarchy(self, request):
@@ -66,13 +100,12 @@ class MenuViewSet(viewsets.ModelViewSet):
             except UserRole.DoesNotExist:
                 pass
 
+        qs = self.get_queryset().filter(parent__isnull=True, is_active=True)
         if is_admin:
-            parent_menus = Menu.objects.filter(parent__isnull=True, is_active=True)
+            parent_menus = qs
         else:
             accessible_menu_ids = user.menu_access.filter(can_view=True).values_list('menu_id', flat=True)
-            parent_menus = Menu.objects.filter(
-                parent__isnull=True,
-                is_active=True,
+            parent_menus = qs.filter(
                 id__in=accessible_menu_ids
             )
 
@@ -91,9 +124,18 @@ class UserMenuAccessViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """
-        Filter by user_id if provided in query params
+        Filter by user_id if provided in query params and enforce tenant isolation
         """
+        user = self.request.user
         queryset = UserMenuAccess.objects.all().select_related('user', 'menu', 'granted_by')
+        
+        if getattr(user, 'role', None) != 'SUPER_ADMIN':
+            admin = _get_admin_owner(user)
+            if admin:
+                queryset = queryset.filter(admin_owner=admin)
+            else:
+                queryset = queryset.none()
+                
         user_id = self.request.query_params.get('user_id', None)
         
         if user_id:
@@ -116,7 +158,8 @@ class UserMenuAccessViewSet(viewsets.ModelViewSet):
         """
         serializer = BulkMenuAccessSerializer(data=request.data)
         if serializer.is_valid():
-            user = serializer.save(granted_by=request.user)
+            admin = None if getattr(request.user, 'role', None) == 'SUPER_ADMIN' else _get_admin_owner(request.user)
+            user = serializer.save(granted_by=request.user, admin_owner=admin)
             
             # Return updated user data with access
             user_serializer = UserWithAccessSerializer(user)
@@ -137,6 +180,13 @@ class UserAccessControlViewSet(viewsets.ViewSet):
         """
         users = User.objects.all().select_related('user_role').prefetch_related('menu_access')
         
+        if getattr(request.user, 'role', None) != 'SUPER_ADMIN':
+            admin = _get_admin_owner(request.user)
+            if admin:
+                users = users.filter(admin_owner=admin)
+            else:
+                users = users.none()
+        
         # Filter by role if provided
         role = request.query_params.get('role', None)
         if role:
@@ -155,19 +205,30 @@ class UserAccessControlViewSet(viewsets.ViewSet):
         serializer = UserWithAccessSerializer(users, many=True)
         return Response(serializer.data)
 
+    def _get_user(self, request, pk):
+        """Helper to get user with tenant isolation"""
+        users = User.objects.all()
+        if getattr(request.user, 'role', None) != 'SUPER_ADMIN':
+            admin = _get_admin_owner(request.user)
+            if admin:
+                users = users.filter(admin_owner=admin)
+            else:
+                users = users.none()
+        try:
+            return users.get(pk=pk)
+        except User.DoesNotExist:
+            return None
+
     def retrieve(self, request, pk=None):
         """
         Get detailed access information for a specific user
         """
-        try:
-            user = User.objects.get(pk=pk)
-            serializer = UserWithAccessSerializer(user)
-            return Response(serializer.data)
-        except User.DoesNotExist:
-            return Response(
-                {"error": "User not found"}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
+        user = self._get_user(request, pk)
+        if not user:
+            return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+            
+        serializer = UserWithAccessSerializer(user)
+        return Response(serializer.data)
 
     @action(detail=True, methods=['post'])
     def grant_access(self, request, pk=None):
@@ -182,8 +243,11 @@ class UserAccessControlViewSet(viewsets.ViewSet):
             "can_delete": false
         }
         """
+        user = self._get_user(request, pk)
+        if not user:
+            return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+
         try:
-            user = User.objects.get(pk=pk)
             menu_id = request.data.get('menu_id')
             
             if not menu_id:
@@ -200,6 +264,9 @@ class UserAccessControlViewSet(viewsets.ViewSet):
                     status=status.HTTP_404_NOT_FOUND
                 )
             
+            # Get admin owner for tenant isolation
+            admin = None if getattr(request.user, 'role', None) == 'SUPER_ADMIN' else _get_admin_owner(request.user)
+
             # Create or update access
             access, created = UserMenuAccess.objects.update_or_create(
                 user=user,
@@ -209,26 +276,27 @@ class UserAccessControlViewSet(viewsets.ViewSet):
                     'can_create': request.data.get('can_create', False),
                     'can_edit': request.data.get('can_edit', False),
                     'can_delete': request.data.get('can_delete', False),
-                    'granted_by': request.user
+                    'granted_by': request.user,
+                    'admin_owner': admin
                 }
             )
             
             serializer = UserMenuAccessSerializer(access)
             return Response(serializer.data, status=status.HTTP_200_OK)
             
-        except User.DoesNotExist:
-            return Response(
-                {"error": "User not found"}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=['delete'])
     def revoke_access(self, request, pk=None):
         """
         Revoke menu access from a user
         """
+        user = self._get_user(request, pk)
+        if not user:
+            return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+
         try:
-            user = User.objects.get(pk=pk)
             menu_id = request.query_params.get('menu_id')
             
             if not menu_id:
@@ -244,11 +312,8 @@ class UserAccessControlViewSet(viewsets.ViewSet):
                 status=status.HTTP_200_OK
             )
             
-        except User.DoesNotExist:
-            return Response(
-                {"error": "User not found"}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=['post'])
     def copy_access(self, request, pk=None):
@@ -259,8 +324,11 @@ class UserAccessControlViewSet(viewsets.ViewSet):
             "from_user_id": 1
         }
         """
+        to_user = self._get_user(request, pk)
+        if not to_user:
+            return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+
         try:
-            to_user = User.objects.get(pk=pk)
             from_user_id = request.data.get('from_user_id')
             
             if not from_user_id:
@@ -283,6 +351,9 @@ class UserAccessControlViewSet(viewsets.ViewSet):
             # Delete existing access for target user
             UserMenuAccess.objects.filter(user=to_user).delete()
             
+            # Get admin owner for tenant isolation
+            admin = None if getattr(request.user, 'role', None) == 'SUPER_ADMIN' else _get_admin_owner(request.user)
+
             # Copy access
             new_access = []
             for access in source_access:
@@ -294,7 +365,8 @@ class UserAccessControlViewSet(viewsets.ViewSet):
                         can_create=access.can_create,
                         can_edit=access.can_edit,
                         can_delete=access.can_delete,
-                        granted_by=request.user
+                        granted_by=request.user,
+                        admin_owner=admin
                     )
                 )
             
@@ -304,8 +376,5 @@ class UserAccessControlViewSet(viewsets.ViewSet):
             serializer = UserWithAccessSerializer(to_user)
             return Response(serializer.data, status=status.HTTP_200_OK)
             
-        except User.DoesNotExist:
-            return Response(
-                {"error": "User not found"}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)

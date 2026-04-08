@@ -4,23 +4,28 @@ from .models import Employee, Department, CustomFieldDefinition, EmployeeAsset
 
 class DepartmentSerializer(serializers.ModelSerializer):
     """
-    Serializer for Department model with employee count
+    Serializer for Department model with employee count.
+    admin_owner is write-only (set automatically in the view, never from client input).
     """
     employee_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Department
-        fields = ['id', 'name', 'description', 'employee_count']
+        fields = ['id', 'name', 'description', 'employee_count', 'admin_owner']
         read_only_fields = ['employee_count']
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
 
     def get_employee_count(self, obj):
-        """Return the number of employees in this department"""
+        """Return the number of employees in this department (scoped to same tenant)."""
         return obj.employees.count()
 
 
 class CustomFieldDefinitionSerializer(serializers.ModelSerializer):
     """
-    Serializer for CustomFieldDefinition model
+    Serializer for CustomFieldDefinition model.
+    admin_owner is write-only (set automatically in the view).
     """
     options_list = serializers.SerializerMethodField()
 
@@ -30,18 +35,23 @@ class CustomFieldDefinitionSerializer(serializers.ModelSerializer):
             'id', 'field_name', 'field_label', 'field_type',
             'field_options', 'options_list', 'is_required',
             'default_value', 'help_text', 'display_order',
-            'is_active', 'created_at', 'updated_at'
+            'is_active', 'created_at', 'updated_at', 'admin_owner',
         ]
         read_only_fields = ['created_at', 'updated_at']
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
 
     def get_options_list(self, obj):
-        """Return options as a list for easier frontend consumption"""
+        """Return options as a list for easier frontend consumption."""
         return obj.get_options_list()
 
     def validate_field_name(self, value):
-        """Ensure field_name has no spaces and is lowercase"""
+        """Ensure field_name has no spaces and is lowercase."""
         if ' ' in value:
-            raise serializers.ValidationError("Field name cannot contain spaces. Use underscores instead.")
+            raise serializers.ValidationError(
+                "Field name cannot contain spaces. Use underscores instead."
+            )
         return value.lower().replace('-', '_')
 
 
@@ -79,10 +89,20 @@ class EmployeeSerializer(serializers.ModelSerializer):
             'shift_type', 'shift_start_time', 'shift_end_time', 'weekly_off_days',
             # Custom Fields
             'custom_fields',
+            # Tenant
+            'admin_owner',
             # Timestamps
-            'created_at', 'updated_at'
+            'created_at', 'updated_at',
         ]
-        read_only_fields = ['employee_id', 'created_at', 'updated_at', 'department_name', 'candidate_id']
+        read_only_fields = [
+            'employee_id', 'created_at', 'updated_at',
+            'department_name', 'candidate_id',
+        ]
+        extra_kwargs = {
+            # admin_owner is injected by the view; clients must never supply it
+            'admin_owner': {'write_only': True, 'required': False},
+        }
+
 
 class EmployeeAssetSerializer(serializers.ModelSerializer):
     class Meta:

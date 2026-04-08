@@ -1,5 +1,5 @@
-# master/models.py
 from django.db import models
+from django.conf import settings
 from employee_management.models import Employee
 
 
@@ -51,6 +51,17 @@ class LeaveType(models.Model):
         default=True,
         help_text="Whether this leave type is currently active"
     )
+
+    # ── Tenant isolation ──────────────────────────────────────────────────────
+    admin_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='leave_types',
+        limit_choices_to={'role': 'ADMIN'},
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -112,6 +123,17 @@ class Allowance(models.Model):
         default=True,
         help_text="Whether this allowance is currently active"
     )
+
+    # ── Tenant isolation ──────────────────────────────────────────────────────
+    admin_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='allowances',
+        limit_choices_to={'role': 'ADMIN'},
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -166,6 +188,17 @@ class Holiday(models.Model):
         default=True,
         help_text="Whether this holiday is currently visible"
     )
+
+    # ── Tenant isolation ──────────────────────────────────────────────────────
+    admin_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='holidays',
+        limit_choices_to={'role': 'ADMIN'},
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -232,6 +265,17 @@ class Deduction(models.Model):
         default=True,
         help_text="Whether this deduction is currently active"
     )
+
+    # ── Tenant isolation ──────────────────────────────────────────────────────
+    admin_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='deductions',
+        limit_choices_to={'role': 'ADMIN'},
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -297,6 +341,17 @@ class Announcement(models.Model):
         default=True,
         help_text="Whether this announcement is visible"
     )
+
+    # ── Tenant isolation ──────────────────────────────────────────────────────
+    admin_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='announcements',
+        limit_choices_to={'role': 'ADMIN'},
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest,EarlyDepartureRequest
+from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest
 from django.utils import timezone
 from datetime import datetime, timedelta
 import pytz
@@ -24,54 +24,60 @@ class AttendanceSerializer(serializers.ModelSerializer):
     verified_by_name = serializers.CharField(source='verified_by.get_full_name', read_only=True, allow_null=True)
     check_in_map_url = serializers.SerializerMethodField()
     check_out_map_url = serializers.SerializerMethodField()
-    # Leave type info – populated from approved LeaveRequest covering this attendance date
     leave_type = serializers.SerializerMethodField()
     leave_type_display = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Attendance
         fields = [
             'id', 'user', 'user_name', 'user_username', 'date', 'date_formatted',
-            'check_in_time', 'check_in_time_formatted', 
+            'check_in_time', 'check_in_time_formatted',
             'check_out_time', 'check_out_time_formatted',
-            'status', 'total_hours', 'notes', 
+            'status', 'total_hours', 'notes',
             'is_verified', 'verified_by', 'verified_by_name', 'verified_at',
             'late_request', 'late_request_reason', 'late_request_status',
             'late_approved_by', 'late_approved_by_name', 'late_approved_at',
             'check_in_latitude', 'check_in_longitude', 'check_in_address', 'check_in_map_url',
             'check_out_latitude', 'check_out_longitude', 'check_out_address', 'check_out_map_url',
             'leave_type', 'leave_type_display',
-            'created_at', 'updated_at'
+            # Tenant – injected by the view, never from client
+            'admin_owner',
+            'created_at', 'updated_at',
         ]
-        read_only_fields = ['total_hours', 'created_at', 'updated_at', 
-                           'late_approved_by', 'late_approved_at',
-                           'verified_by', 'verified_at']
-    
+        read_only_fields = [
+            'total_hours', 'created_at', 'updated_at',
+            'late_approved_by', 'late_approved_at',
+            'verified_by', 'verified_at',
+        ]
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
+
     def get_check_in_time_formatted(self, obj):
         if obj.check_in_time:
             ist = pytz.timezone('Asia/Kolkata')
             local_time = obj.check_in_time.astimezone(ist)
             return local_time.strftime('%I:%M %p')
         return None
-    
+
     def get_check_out_time_formatted(self, obj):
         if obj.check_out_time:
             ist = pytz.timezone('Asia/Kolkata')
             local_time = obj.check_out_time.astimezone(ist)
             return local_time.strftime('%I:%M %p')
         return None
-    
+
     def get_date_formatted(self, obj):
         return obj.date.strftime('%Y-%m-%d')
-    
+
     def get_check_in_map_url(self, obj):
         return obj.get_check_in_map_url()
-    
+
     def get_check_out_map_url(self, obj):
         return obj.get_check_out_map_url()
 
     def _get_leave_request(self, obj):
-        """Return the approved LeaveRequest that covers this attendance date, if any."""
+        """Return the approved LeaveRequest covering this attendance date, if any."""
         if obj.status != 'leave':
             return None
         return LeaveRequest.objects.filter(
@@ -95,7 +101,7 @@ class CheckInSerializer(serializers.Serializer):
     latitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True)
     longitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True)
     address = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    
+
     def validate(self, data):
         user = self.context['request'].user
         today = timezone.now().date()
@@ -110,7 +116,7 @@ class CheckOutSerializer(serializers.Serializer):
     latitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True)
     longitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False, allow_null=True)
     address = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    
+
     def validate(self, data):
         user = self.context['request'].user
         today = timezone.now().date()
@@ -127,25 +133,25 @@ class CheckOutSerializer(serializers.Serializer):
 class LateRequestSerializer(serializers.Serializer):
     reason = serializers.CharField(required=True, allow_blank=False)
     date = serializers.DateField(required=False)
-    
+
     def validate(self, data):
         user = self.context['request'].user
         request_date = data.get('date', timezone.now().date())
-        
+
         attendance = Attendance.objects.filter(user=user, date=request_date).first()
         if attendance:
             if attendance.late_request and attendance.late_request_status == 'pending':
                 raise serializers.ValidationError("You already have a pending late request for this date.")
             if attendance.late_request and attendance.late_request_status == 'approved':
                 raise serializers.ValidationError("Late request already approved for this date.")
-        
+
         data['request_date'] = request_date
         return data
 
 
 class LateApprovalSerializer(serializers.Serializer):
     action = serializers.ChoiceField(choices=['approve', 'reject'])
-    
+
     def validate(self, data):
         if not self.context['request'].user.is_staff:
             raise serializers.ValidationError("Only admins can approve/reject late requests.")
@@ -172,8 +178,8 @@ class VerifyAttendanceSerializer(serializers.Serializer):
 
 class LateArrivalRequestSerializer(serializers.ModelSerializer):
     """Full read serializer – used in list/detail views."""
-    user_name     = serializers.CharField(source='user.get_full_name', read_only=True)
-    user_username = serializers.CharField(source='user.username',      read_only=True)
+    user_name = serializers.CharField(source='user.get_full_name', read_only=True)
+    user_username = serializers.CharField(source='user.username', read_only=True)
     reviewed_by_name = serializers.CharField(
         source='reviewed_by.get_full_name', read_only=True, allow_null=True
     )
@@ -182,25 +188,29 @@ class LateArrivalRequestSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
 
     class Meta:
-        model  = LateArrivalRequest
+        model = LateArrivalRequest
         fields = [
             'id', 'user', 'user_name', 'user_username',
             'date', 'date_formatted',
             'expected_arrival_time', 'arrival_time_formatted',
             'reason', 'status', 'status_display',
             'reviewed_by', 'reviewed_by_name', 'reviewed_at', 'admin_notes',
+            # Tenant – injected by the view, never from client
+            'admin_owner',
             'created_at', 'updated_at',
         ]
         read_only_fields = [
             'user', 'status', 'reviewed_by', 'reviewed_at', 'created_at', 'updated_at',
         ]
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
 
     def get_date_formatted(self, obj):
         return obj.date.strftime('%d %b %Y') if obj.date else None
 
     def get_arrival_time_formatted(self, obj):
         if obj.expected_arrival_time:
-            # Convert time to 12-hour format
             t = obj.expected_arrival_time
             hour = t.hour
             minute = t.minute
@@ -214,18 +224,16 @@ class CreateLateArrivalRequestSerializer(serializers.ModelSerializer):
     """Serializer for creating a new late arrival request."""
 
     class Meta:
-        model  = LateArrivalRequest
+        model = LateArrivalRequest
         fields = ['date', 'expected_arrival_time', 'reason']
 
     def validate_date(self, value):
-        # Allow past dates (retroactive), today, or near-future dates
         return value
 
     def validate(self, data):
         user = self.context['request'].user
         date = data.get('date')
 
-        # Check for an existing request on the same date
         existing = LateArrivalRequest.objects.filter(user=user, date=date).first()
         if existing:
             if existing.status == 'pending':
@@ -236,7 +244,6 @@ class CreateLateArrivalRequestSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     "A late arrival request for this date has already been approved."
                 )
-            # If cancelled/rejected, allow re-submission by deleting old record
             existing.delete()
 
         return data
@@ -244,7 +251,7 @@ class CreateLateArrivalRequestSerializer(serializers.ModelSerializer):
 
 class LateArrivalApprovalSerializer(serializers.Serializer):
     """Admin approves or rejects a late arrival request."""
-    action      = serializers.ChoiceField(choices=['approve', 'reject'])
+    action = serializers.ChoiceField(choices=['approve', 'reject'])
     admin_notes = serializers.CharField(required=False, allow_blank=True)
 
     def validate(self, data):
@@ -274,7 +281,7 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     start_date_formatted = serializers.SerializerMethodField()
     end_date_formatted = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = LeaveRequest
         fields = [
@@ -285,13 +292,18 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
             'reason', 'status', 'status_display',
             'total_days',
             'reviewed_by', 'reviewed_by_name', 'reviewed_at', 'admin_notes',
-            'created_at', 'updated_at'
+            # Tenant – injected by the view, never from client
+            'admin_owner',
+            'created_at', 'updated_at',
         ]
         read_only_fields = ['user', 'status', 'reviewed_by', 'reviewed_at', 'created_at', 'updated_at']
-    
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
+
     def get_start_date_formatted(self, obj):
         return obj.start_date.strftime('%d %b %Y') if obj.start_date else None
-    
+
     def get_end_date_formatted(self, obj):
         return obj.end_date.strftime('%d %b %Y') if obj.end_date else None
 
@@ -301,15 +313,15 @@ class CreateLeaveRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = LeaveRequest
         fields = ['leave_type', 'start_date', 'end_date', 'reason']
-    
+
     def validate(self, data):
         start_date = data.get('start_date')
         end_date = data.get('end_date')
-        
+
         if start_date and end_date:
             if end_date < start_date:
                 raise serializers.ValidationError("End date cannot be before start date.")
-        
+
         user = self.context['request'].user
         if start_date and end_date:
             overlapping = LeaveRequest.objects.filter(
@@ -324,7 +336,7 @@ class CreateLeaveRequestSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     "You already have a leave request for this date range."
                 )
-        
+
         return data
 
 
@@ -332,7 +344,7 @@ class LeaveApprovalSerializer(serializers.Serializer):
     """Serializer for admin approving/rejecting leave requests"""
     action = serializers.ChoiceField(choices=['approve', 'reject'])
     admin_notes = serializers.CharField(required=False, allow_blank=True)
-    
+
     def validate(self, data):
         user = self.context['request'].user
         is_admin = (
@@ -373,7 +385,7 @@ class TodayAttendanceSerializer(serializers.Serializer):
     check_out_address = serializers.CharField(allow_null=True)
     check_in_time_formatted = serializers.SerializerMethodField()
     check_out_time_formatted = serializers.SerializerMethodField()
-    
+
     def get_check_in_time_formatted(self, obj):
         check_in = obj.get('check_in_time')
         if check_in and isinstance(check_in, datetime):
@@ -381,7 +393,7 @@ class TodayAttendanceSerializer(serializers.Serializer):
             local_time = check_in.astimezone(ist)
             return local_time.strftime('%I:%M %p')
         return None
-    
+
     def get_check_out_time_formatted(self, obj):
         check_out = obj.get('check_out_time')
         if check_out and isinstance(check_out, datetime):
@@ -395,22 +407,19 @@ class AttendanceSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = AttendanceSettings
         fields = [
-            'id', 'office_start_time', 'office_end_time',
+            'id',
+            'office_start_time', 'office_end_time',
             'grace_period_minutes', 'minimum_hours_full_day',
             'minimum_hours_half_day',
-            # ── Geofence fields ──
             'office_latitude', 'office_longitude', 'office_radius_meters',
+            # Tenant – injected by the view, never from client
+            'admin_owner',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['created_at', 'updated_at']
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ADD THESE CLASSES TO YOUR EXISTING serializers.py
-# 1. Add EarlyDepartureRequest to the import line at the top:
-#    from .models import Attendance, AttendanceSettings, LeaveRequest,
-#                        LateArrivalRequest, EarlyDepartureRequest
-# 2. Paste the three classes below after the LateArrivalApprovalSerializer
-# ─────────────────────────────────────────────────────────────────────────────
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -419,16 +428,16 @@ class AttendanceSettingsSerializer(serializers.ModelSerializer):
 
 class EarlyDepartureRequestSerializer(serializers.ModelSerializer):
     """Full read serializer – used in list / detail views."""
-    user_name        = serializers.CharField(source='user.get_full_name', read_only=True)
-    user_username    = serializers.CharField(source='user.username',      read_only=True)
+    user_name = serializers.CharField(source='user.get_full_name', read_only=True)
+    user_username = serializers.CharField(source='user.username', read_only=True)
     reviewed_by_name = serializers.CharField(
         source='reviewed_by.get_full_name', read_only=True, allow_null=True
     )
-    status_display   = serializers.CharField(source='get_status_display', read_only=True)
-    date_formatted   = serializers.SerializerMethodField()
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    date_formatted = serializers.SerializerMethodField()
 
     class Meta:
-        model  = EarlyDepartureRequest
+        model = EarlyDepartureRequest
         fields = [
             'id', 'user', 'user_name', 'user_username',
             'date', 'date_formatted',
@@ -436,12 +445,17 @@ class EarlyDepartureRequestSerializer(serializers.ModelSerializer):
             'reason', 'status', 'status_display',
             'reviewed_by', 'reviewed_by_name', 'reviewed_at',
             'admin_notes',
+            # Tenant – injected by the view, never from client
+            'admin_owner',
             'created_at', 'updated_at',
         ]
         read_only_fields = [
             'user', 'status', 'reviewed_by', 'reviewed_at',
             'created_at', 'updated_at',
         ]
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
 
     def get_date_formatted(self, obj):
         return obj.date.strftime('%d %b %Y') if obj.date else None
@@ -451,11 +465,10 @@ class CreateEarlyDepartureRequestSerializer(serializers.ModelSerializer):
     """Write serializer – used when a user submits a new request."""
 
     class Meta:
-        model  = EarlyDepartureRequest
+        model = EarlyDepartureRequest
         fields = ['date', 'expected_departure_time', 'reason']
 
     def validate_date(self, value):
-        from django.utils import timezone
         today = timezone.now().date()
         if value < today:
             raise serializers.ValidationError(
@@ -477,7 +490,6 @@ class CreateEarlyDepartureRequestSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     "An early departure request for this date has already been approved."
                 )
-            # Allow re-submission if previously cancelled or rejected
             existing.delete()
 
         return data
@@ -485,7 +497,7 @@ class CreateEarlyDepartureRequestSerializer(serializers.ModelSerializer):
 
 class EarlyDepartureApprovalSerializer(serializers.Serializer):
     """Admin approves or rejects an early departure request."""
-    action      = serializers.ChoiceField(choices=['approve', 'reject'])
+    action = serializers.ChoiceField(choices=['approve', 'reject'])
     admin_notes = serializers.CharField(required=False, allow_blank=True)
 
     def validate(self, data):

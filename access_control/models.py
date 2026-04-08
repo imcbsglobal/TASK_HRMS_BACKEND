@@ -15,6 +15,16 @@ class Menu(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # ── Tenant isolation ──────────────────────────────────────────────────────
+    admin_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='menus',
+        limit_choices_to={'role': 'ADMIN'},
+    )
+
     class Meta:
         ordering = ['order', 'name']
         verbose_name = 'Menu'
@@ -45,6 +55,16 @@ class UserMenuAccess(models.Model):
     granted_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # ── Tenant isolation ──────────────────────────────────────────────────────
+    admin_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='user_menu_accesses',
+        limit_choices_to={'role': 'ADMIN'},
+    )
+
     class Meta:
         unique_together = ('user', 'menu')
         verbose_name = 'User Menu Access'
@@ -73,6 +93,16 @@ class UserRole(models.Model):
     profile_image = models.ImageField(upload_to='profile_images/', blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # ── Tenant isolation ──────────────────────────────────────────────────────
+    admin_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='user_roles',
+        limit_choices_to={'role': 'ADMIN'},
+    )
 
     def __str__(self):
         return f"{self.user.username} - {self.get_role_display()}"

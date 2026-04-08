@@ -15,7 +15,7 @@ class MenuSerializer(serializers.ModelSerializer):
     class Meta:
         model = Menu
         fields = ['id', 'name', 'slug', 'icon', 'route', 'parent', 'order', 
-                  'is_active', 'children', 'full_path', 'created_at', 'updated_at']
+                  'is_active', 'children', 'full_path', 'created_at', 'updated_at', 'admin_owner']
 
     def get_children(self, obj):
         """Get child menus"""
@@ -38,7 +38,7 @@ class UserMenuAccessSerializer(serializers.ModelSerializer):
         model = UserMenuAccess
         fields = ['id', 'user', 'menu', 'menu_name', 'menu_slug', 'menu_icon', 
                   'menu_route', 'can_view', 'can_create', 'can_edit', 'can_delete',
-                  'granted_by', 'granted_by_username', 'granted_at', 'updated_at']
+                  'granted_by', 'granted_by_username', 'granted_at', 'updated_at', 'admin_owner']
     
     def get_granted_by_username(self, obj):
         return obj.granted_by.username if obj.granted_by else None
@@ -57,7 +57,7 @@ class UserRoleSerializer(serializers.ModelSerializer):
         model = UserRole
         fields = ['id', 'user', 'username', 'email', 'first_name', 'last_name',
                   'role', 'department', 'designation', 'employee_id', 'phone',
-                  'profile_image', 'created_at', 'updated_at']
+                  'profile_image', 'created_at', 'updated_at', 'admin_owner']
 
 
 class UserWithAccessSerializer(serializers.ModelSerializer):
@@ -110,7 +110,7 @@ class BulkMenuAccessSerializer(serializers.Serializer):
                 raise serializers.ValidationError(f"Menu with id {access['menu_id']} not found")
         return value
 
-    def save(self, granted_by=None):
+    def save(self, granted_by=None, admin_owner=None):
         """
         Save or update menu access for the user
         """
@@ -134,7 +134,8 @@ class BulkMenuAccessSerializer(serializers.Serializer):
                     can_create=access.get('can_create', False),
                     can_edit=access.get('can_edit', False),
                     can_delete=access.get('can_delete', False),
-                    granted_by=granted_by
+                    granted_by=granted_by,
+                    admin_owner=admin_owner
                 )
             )
         

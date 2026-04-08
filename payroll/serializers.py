@@ -37,8 +37,12 @@ class PayrollSerializer(serializers.ModelSerializer):
             'payment_reference',
             'created_at',
             'updated_at',
+            'admin_owner',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'net_salary']
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
 
 
 class PayrollDetailSerializer(serializers.ModelSerializer):
@@ -85,8 +89,12 @@ class PayrollDetailSerializer(serializers.ModelSerializer):
             'payment_reference',
             'created_at',
             'updated_at',
+            'admin_owner',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'net_salary']
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
     
     def get_allowances(self, obj):
         """Get all allowances for this employee and month"""

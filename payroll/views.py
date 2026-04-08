@@ -19,10 +19,20 @@ from attendance.models import Attendance, LeaveRequest
 # HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _get_admin_owner(user):
+    """
+    Return the ADMIN who owns the current request's tenant scope.
+    """
+    if user.role == 'ADMIN':
+        return user
+    if user.role == 'USER':
+        return user.admin_owner
+    return None  # SUPER_ADMIN
+
+
 def _get_leave_type_breakdown(employee, year, month):
     """
     Get detailed breakdown of leave types for the employee in the given month.
-    Returns dict with leave type counts and days.
     """
     from login.models import User
     from datetime import date
@@ -61,8 +71,8 @@ def _get_leave_type_breakdown(employee, year, month):
                 leave_breakdown[leave_type_key]['count'] += 1
                 leave_breakdown[leave_type_key]['days']  += days_in_month
 
-    except Exception as e:
-        print(f"Error calculating leave breakdown: {e}")
+    except Exception:
+        pass
 
     return leave_breakdown
 
@@ -70,7 +80,6 @@ def _get_leave_type_breakdown(employee, year, month):
 def _get_attendance_summary(employee, year, month, total_days):
     """
     Match Employee → auth User by email, then count every attendance status
-    for the given month.
     """
     summary = {
         'present_days':   0,
@@ -109,11 +118,6 @@ def _get_attendance_summary(employee, year, month, total_days):
 
 
 def _calc_att_deduction(basic_salary, total_days, absent_days, half_days):
-    """
-    per_day_salary   = basic_salary / total_days_in_month
-    absent_deduction = absent_days              × per_day_salary
-    half_deduction   = half_days   × 0.5        × per_day_salary
-    """
     basic   = Decimal(str(basic_salary))
     divisor = Decimal(str(total_days)) if total_days else Decimal('1')
     per_day = (basic / divisor).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
@@ -123,15 +127,7 @@ def _calc_att_deduction(basic_salary, total_days, absent_days, half_days):
     return per_day, deduct
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PF & OVERTIME AUTO-COMPUTE
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _calc_pf_amount(employee):
-    """
-    Compute the employee's PF contribution for this payroll period.
-    Returns (amount: Decimal, detail: dict) or (Decimal('0'), None) if PF disabled.
-    """
     if not employee.pf_enabled:
         return Decimal('0'), None
 
@@ -142,7 +138,6 @@ def _calc_pf_amount(employee):
         amount = contrib
         label  = f"Fixed ₹{contrib}"
     else:
-        # percentage of basic
         amount = (basic * contrib / Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         label  = f"{contrib}% of Basic"
 
@@ -158,10 +153,6 @@ def _calc_pf_amount(employee):
 
 
 def _calc_overtime_amount(employee, total_days_in_month):
-    """
-    Compute overtime amount based on the employee's overtime settings.
-    Returns (amount: Decimal, detail: dict) or (Decimal('0'), None) if OT disabled.
-    """
     if not employee.overtime_enabled:
         return Decimal('0'), None
 
@@ -173,11 +164,9 @@ def _calc_overtime_amount(employee, total_days_in_month):
         return Decimal('0'), None
 
     if employee.overtime_rate_type == 'fixed':
-        # fixed hourly rate × max hours
         amount = (rate * max_hrs).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         label  = f"₹{rate}/hr × {max_hrs} hrs"
     else:
-        # multiplier: hourly_rate = basic / (days * 8) × multiplier × hours
         hours_in_month = Decimal(str(total_days_in_month)) * Decimal('8')
         hourly_rate    = basic / hours_in_month
         amount         = (hourly_rate * rate * max_hrs).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
@@ -194,17 +183,9 @@ def _calc_overtime_amount(employee, total_days_in_month):
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CENTRAL PAYROLL BUILDER
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _build_payroll_dict(employee, year, month):
+def _build_payroll_dict(employee, year, month, admin_owner=None):
     """
-    Central helper used by both employee_data and calculate_payroll.
-    Returns a complete dict ready for JSON serialisation.
-
-    Auto-includes PF and Overtime allowances from employee settings on top of
-    any manually created Allowance records in the DB.
+    Central helper for payroll calculation.
     """
     total_days   = calendar.monthrange(year, month)[1]
     basic_salary = employee.salary
@@ -215,13 +196,17 @@ def _build_payroll_dict(employee, year, month):
         basic_salary, total_days, att['absent_days'], att['half_days']
     )
 
-    # ── Manual allowances & deductions from DB ────────────────────────────────
+    # ── Manual allowances & deductions from DB (tenant-scoped) ────────────────
     db_allowances = Allowance.objects.filter(
         employee=employee, year=year, month=month, is_active=True
     )
     db_deductions = Deduction.objects.filter(
         employee=employee, year=year, month=month, is_active=True
     )
+    
+    if admin_owner:
+        db_allowances = db_allowances.filter(admin_owner=admin_owner)
+        db_deductions = db_deductions.filter(admin_owner=admin_owner)
 
     db_allowances_total = db_allowances.aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
     total_manual_deductions = db_deductions.aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
@@ -240,22 +225,6 @@ def _build_payroll_dict(employee, year, month):
         Decimal(str(basic_salary)) + total_allowances - total_deductions
     ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
-    # ── Build allowances list (manual + auto) ─────────────────────────────────
-    allowances_list = [
-        {
-            'id':          a.id,
-            'name':        a.allowance_name,
-            'amount':      str(a.amount),
-            'description': a.description,
-            'source':      'manual',
-        }
-        for a in db_allowances
-    ]
-    if pf_detail:
-        allowances_list.append(pf_detail)
-    if ot_detail:
-        allowances_list.append(ot_detail)
-
     return {
         'basic_salary':            str(basic_salary),
         'total_allowances':        str(total_allowances),
@@ -265,7 +234,6 @@ def _build_payroll_dict(employee, year, month):
         'net_salary':              str(net_salary),
         'total_days_in_month':     total_days,
         'total_working_days':      att['working_days'],
-        # Breakdown for UI
         'db_allowances_total':     str(db_allowances_total),
         'pf_amount':               str(pf_amount),
         'overtime_amount':         str(ot_amount),
@@ -282,17 +250,16 @@ def _build_payroll_dict(employee, year, month):
             'attendance_deduction': str(att_deduction),
             'leave_breakdown':      att.get('leave_breakdown', {}),
         },
-        'allowances': allowances_list,
-        'deductions': [
+        'allowances': [
             {
-                'id':          d.id,
-                'name':        d.deduction_name,
-                'amount':      str(d.amount),
-                'description': d.description,
-            }
+                'id': a.id, 'name': a.allowance_name, 'amount': str(a.amount), 
+                'description': a.description, 'source': 'manual'
+            } for a in db_allowances
+        ] + ([pf_detail] if pf_detail else []) + ([ot_detail] if ot_detail else []),
+        'deductions': [
+            {'id': d.id, 'name': d.deduction_name, 'amount': str(d.amount), 'description': d.description}
             for d in db_deductions
         ],
-        # Employee PF & OT settings (for UI display)
         'employee_settings': {
             'pf_enabled':                   employee.pf_enabled,
             'pf_number':                    employee.pf_number,
@@ -310,29 +277,21 @@ def _build_payroll_dict(employee, year, month):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class PayrollViewSet(viewsets.ModelViewSet):
-    """
-    ViewSet for Payroll CRUD operations
-
-    GET    /api/payroll/               – list
-    POST   /api/payroll/               – create
-    GET    /api/payroll/{id}/          – detail
-    PUT    /api/payroll/{id}/          – update
-    PATCH  /api/payroll/{id}/          – partial update
-    DELETE /api/payroll/{id}/          – delete
-    POST   /api/payroll/calculate/     – calculate (not saved)
-    GET    /api/payroll/employee-data/ – data used by Payroll.jsx
-    POST   /api/payroll/{id}/process/  – mark as processed
-    POST   /api/payroll/{id}/mark-paid/– mark as paid
-    """
-
-    queryset           = Payroll.objects.select_related('employee', 'processed_by').all()
+    """ViewSet for Payroll CRUD operations"""
+    queryset           = Payroll.objects.all()
     serializer_class   = PayrollSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        qs = Payroll.objects.select_related(
-            'employee', 'employee__department', 'processed_by'
-        ).all()
+        user = self.request.user
+        if user.role == 'SUPER_ADMIN':
+            qs = Payroll.objects.select_related('employee', 'employee__department', 'processed_by').all()
+        else:
+            admin = _get_admin_owner(user)
+            if admin is None:
+                return Payroll.objects.none()
+            qs = Payroll.objects.select_related('employee', 'employee__department', 'processed_by').filter(admin_owner=admin)
+        
         p = self.request.query_params
         if p.get('employee'): qs = qs.filter(employee_id=p['employee'])
         if p.get('year'):     qs = qs.filter(year=p['year'])
@@ -345,10 +304,12 @@ class PayrollViewSet(viewsets.ModelViewSet):
             return PayrollDetailSerializer
         return PayrollSerializer
 
-    # ── POST /api/payroll/calculate/ ─────────────────────────────────────────
+    def perform_create(self, serializer):
+        admin = _get_admin_owner(self.request.user)
+        serializer.save(admin_owner=admin)
+
     @action(detail=False, methods=['post'], url_path='calculate')
     def calculate_payroll(self, request):
-        """Preview-only calculation (nothing is saved to DB)."""
         ser = PayrollCalculateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
@@ -357,11 +318,19 @@ class PayrollViewSet(viewsets.ModelViewSet):
         month       = ser.validated_data['month']
 
         try:
-            employee = Employee.objects.get(id=employee_id)
+            # Enforce tenant scope for employee lookup
+            user = request.user
+            emp_qs = Employee.objects.all()
+            if user.role != 'SUPER_ADMIN':
+                admin = _get_admin_owner(user)
+                emp_qs = emp_qs.filter(admin_owner=admin)
+            
+            employee = emp_qs.get(id=employee_id)
         except Employee.DoesNotExist:
             return Response({'error': 'Employee not found'}, status=status.HTTP_404_NOT_FOUND)
 
-        data = _build_payroll_dict(employee, year, month)
+        admin = _get_admin_owner(request.user)
+        data = _build_payroll_dict(employee, year, month, admin_owner=admin)
         data.update({
             'employee_id':   employee.id,
             'employee_name': f"{employee.first_name} {employee.last_name}",
@@ -372,30 +341,32 @@ class PayrollViewSet(viewsets.ModelViewSet):
         })
         return Response(data, status=status.HTTP_200_OK)
 
-    # ── GET /api/payroll/employee-data/ ──────────────────────────────────────
     @action(detail=False, methods=['get'], url_path='employee-data')
     def employee_data(self, request):
-        """Full payroll + attendance breakdown for Payroll.jsx."""
         employee_id = request.query_params.get('employee_id')
         year        = request.query_params.get('year')
         month       = request.query_params.get('month')
 
         if not all([employee_id, year, month]):
-            return Response(
-                {'error': 'employee_id, year, and month are required'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({'error': 'employee_id, year, and month are required'}, status=status.HTTP_400_BAD_REQUEST)
+        
         try:
-            employee = Employee.objects.get(id=employee_id)
+            user = request.user
+            emp_qs = Employee.objects.all()
+            if user.role != 'SUPER_ADMIN':
+                admin = _get_admin_owner(user)
+                emp_qs = emp_qs.filter(admin_owner=admin)
+            employee = emp_qs.get(id=employee_id)
         except Employee.DoesNotExist:
             return Response({'error': 'Employee not found'}, status=status.HTTP_404_NOT_FOUND)
+            
         try:
-            year  = int(year)
-            month = int(month)
+            year, month = int(year), int(month)
         except ValueError:
             return Response({'error': 'Invalid year or month'}, status=status.HTTP_400_BAD_REQUEST)
 
-        data = _build_payroll_dict(employee, year, month)
+        admin = _get_admin_owner(request.user)
+        data = _build_payroll_dict(employee, year, month, admin_owner=admin)
         data['employee'] = {
             'id':          employee.id,
             'employee_id': employee.employee_id,
@@ -406,49 +377,32 @@ class PayrollViewSet(viewsets.ModelViewSet):
             'phone':       employee.phone,
         }
         data['payroll'] = {
-            'year':                     year,
-            'month':                    month,
-            'month_name':               dict(Payroll.MONTH_CHOICES).get(month, ''),
-            'basic_salary':             data['basic_salary'],
-            'total_allowances':         data['total_allowances'],
-            'total_deductions':         data['total_deductions'],
-            'attendance_deduction':     data['attendance_deduction'],
-            'manual_deductions_total':  data['manual_deductions_total'],
-            'net_salary':               data['net_salary'],
-            'total_days_in_month':      data['total_days_in_month'],
-            'total_working_days':       data['total_working_days'],
-            # PF / OT breakdown
-            'pf_amount':                data['pf_amount'],
-            'overtime_amount':          data['overtime_amount'],
-            'db_allowances_total':      data['db_allowances_total'],
-            'auto_allowances_total':    data['auto_allowances_total'],
+            'year': year, 'month': month, 'month_name': dict(Payroll.MONTH_CHOICES).get(month, ''),
+            'basic_salary': data['basic_salary'], 'total_allowances': data['total_allowances'],
+            'total_deductions': data['total_deductions'], 'attendance_deduction': data['attendance_deduction'],
+            'manual_deductions_total': data['manual_deductions_total'], 'net_salary': data['net_salary'],
+            'total_days_in_month': data['total_days_in_month'], 'total_working_days': data['total_working_days'],
+            'pf_amount': data['pf_amount'], 'overtime_amount': data['overtime_amount'],
+            'db_allowances_total': data['db_allowances_total'], 'auto_allowances_total': data['auto_allowances_total'],
         }
         return Response(data, status=status.HTTP_200_OK)
 
-    # ── POST /api/payroll/{id}/process/ ──────────────────────────────────────
     @action(detail=True, methods=['post'], url_path='process')
     def process_payroll(self, request, pk=None):
         payroll = self.get_object()
         if payroll.status in ('processed', 'paid'):
-            return Response(
-                {'error': 'Payroll is already processed or paid'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({'error': 'Payroll is already processed or paid'}, status=status.HTTP_400_BAD_REQUEST)
         payroll.status       = 'processed'
         payroll.processed_by = request.user
         payroll.processed_at = timezone.now()
         payroll.save()
         return Response(PayrollDetailSerializer(payroll).data, status=status.HTTP_200_OK)
 
-    # ── POST /api/payroll/{id}/mark-paid/ ────────────────────────────────────
     @action(detail=True, methods=['post'], url_path='mark-paid')
     def mark_paid(self, request, pk=None):
         payroll = self.get_object()
         if payroll.status == 'paid':
-            return Response(
-                {'error': 'Payroll is already marked as paid'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({'error': 'Payroll is already marked as paid'}, status=status.HTTP_400_BAD_REQUEST)
         payroll.status            = 'paid'
         payroll.payment_date      = request.data.get('payment_date') or payroll.payment_date
         payroll.payment_reference = request.data.get('payment_reference', '')

@@ -5,7 +5,7 @@ User = get_user_model()
 
 
 # ---------------------------------------------------------------------------
-# Read / list  –  used by UserListView & ProfileAPIView
+# Read / list
 # ---------------------------------------------------------------------------
 class UserSerializer(serializers.ModelSerializer):
     profile_image = serializers.SerializerMethodField()
@@ -14,11 +14,11 @@ class UserSerializer(serializers.ModelSerializer):
         model  = User
         fields = (
             'id', 'username', 'first_name', 'last_name',
-            'email', 'role', 'profile_image', 'is_active', 'plain_password', 'work_location',
+            'email', 'role', 'profile_image', 'is_active',
+            'plain_password', 'work_location', 'client_id', 'admin_owner',
         )
 
     def get_profile_image(self, obj):
-        """Return an absolute URL for the image, or None."""
         if obj.profile_image:
             request = self.context.get('request')
             return request.build_absolute_uri(obj.profile_image.url) if request else obj.profile_image.url
@@ -33,13 +33,17 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model  = User
-        fields = ['id', 'username', 'password', 'first_name', 'last_name', 'email', 'role', 'profile_image', 'is_active', 'work_location']
+        fields = [
+            'id', 'username', 'password', 'first_name', 'last_name',
+            'email', 'role', 'profile_image', 'is_active', 'work_location',
+            'admin_owner',
+        ]
+        # client_id is intentionally excluded – it is auto-generated in model.save()
 
     def create(self, validated_data):
-        # Store the plain password before hashing (for development only)
         plain_pwd = validated_data.get('password', '')
         user = User.objects.create_user(**validated_data)
-        user.plain_password = plain_pwd  # Store plain text password
+        user.plain_password = plain_pwd
         user.save()
         return user
 
@@ -48,40 +52,31 @@ class UserCreateSerializer(serializers.ModelSerializer):
 # Update  –  PATCH /users/<id>/update/
 # ---------------------------------------------------------------------------
 class UserUpdateSerializer(serializers.ModelSerializer):
-    """
-    All fields are optional so that a partial (PATCH) update works.
-    profile_image accepts a new file upload OR the string "remove" to clear it.
-    password is optional - only updated if provided.
-    """
     profile_image = serializers.CharField(required=False, allow_null=True)
-    password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    password      = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     class Meta:
         model  = User
-        fields = ['username', 'password', 'first_name', 'last_name', 'email', 'role', 'is_active', 'profile_image', 'work_location']
+        fields = [
+            'username', 'password', 'first_name', 'last_name',
+            'email', 'role', 'is_active', 'profile_image', 'work_location',
+        ]
 
     def update(self, instance, validated_data):
         image_value = validated_data.pop('profile_image', 'NOT_PROVIDED')
-        password = validated_data.pop('password', None)
+        password    = validated_data.pop('password', None)
 
-        # Update simple fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
 
-        # Update password if provided
         if password:
             instance.set_password(password)
-            instance.plain_password = password  # Store plain text password (development only)
+            instance.plain_password = password
 
-        # Handle profile_image separately
         if image_value == 'NOT_PROVIDED':
-            pass                          # field was not sent at all – keep current
+            pass
         elif image_value is None or image_value == 'remove':
-            instance.profile_image = None # explicit removal
-        else:
-            # A new file was uploaded – it arrives via request.FILES,
-            # so we grab it from the serializer's context in the view.
-            pass                          # handled in view before calling save()
+            instance.profile_image = None
 
         instance.save()
         return instance

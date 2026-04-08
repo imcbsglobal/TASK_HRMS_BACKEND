@@ -1,6 +1,3 @@
-from django.shortcuts import render
-
-# Create your views here.
 import requests
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -15,22 +12,50 @@ from .serializers import (
 )
 
 
+def _get_admin_owner(user):
+    """
+    Return the ADMIN who owns the current request's tenant scope.
+    """
+    if user.role == 'ADMIN':
+        return user
+    if user.role == 'USER':
+        return user.admin_owner
+    return None  # SUPER_ADMIN
+
+
 class WhatsAppConfigView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         """Return the current config, admin numbers, and notification purposes."""
-        # Config — always a single row (get or create)
-        config_obj, _ = WhatsAppConfig.objects.get_or_create(pk=1)
-        config_data   = WhatsAppConfigSerializer(config_obj).data
+        user = request.user
+        admin = _get_admin_owner(user)
+
+        if user.role != 'SUPER_ADMIN' and admin is None:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_403_FORBIDDEN)
+
+        # Config — tenant-specific
+        config_qs = WhatsAppConfig.objects.all()
+        if user.role != 'SUPER_ADMIN':
+            config_qs = config_qs.filter(admin_owner=admin)
+        
+        config_obj = config_qs.first()
+        if not config_obj and user.role != 'SUPER_ADMIN':
+            config_obj = WhatsAppConfig.objects.create(admin_owner=admin)
+        
+        config_data = WhatsAppConfigSerializer(config_obj).data if config_obj else {}
 
         # Admin numbers
-        admin_numbers = WhatsAppAdminNumber.objects.all()
-        admin_data    = WhatsAppAdminNumberSerializer(admin_numbers, many=True).data
+        admin_numbers_qs = WhatsAppAdminNumber.objects.all()
+        if user.role != 'SUPER_ADMIN':
+            admin_numbers_qs = admin_numbers_qs.filter(admin_owner=admin)
+        admin_data = WhatsAppAdminNumberSerializer(admin_numbers_qs, many=True).data
 
         # Notification purposes
-        purposes    = WhatsAppNotificationPurpose.objects.all()
-        purpose_data = WhatsAppNotificationPurposeSerializer(purposes, many=True).data
+        purposes_qs = WhatsAppNotificationPurpose.objects.all()
+        if user.role != 'SUPER_ADMIN':
+            purposes_qs = purposes_qs.filter(admin_owner=admin)
+        purpose_data = WhatsAppNotificationPurposeSerializer(purposes_qs, many=True).data
 
         return Response({
             'config':        config_data,
@@ -41,33 +66,54 @@ class WhatsAppConfigView(APIView):
     def post(self, request):
         """
         Save whichever section the frontend sends.
-        The body can contain 'config', 'admin_numbers', and/or 'purposes'.
         """
+        user = request.user
+        if user.role == 'USER':
+            return Response({'error': 'Only admins can change config'}, status=status.HTTP_403_FORBIDDEN)
+        
+        admin = _get_admin_owner(user)
         data = request.data
 
         # ── Save API config ───────────────────────────────────────────────
         if 'config' in data:
-            config_obj, _ = WhatsAppConfig.objects.get_or_create(pk=1)
-            serializer = WhatsAppConfigSerializer(
-                config_obj, data=data['config'], partial=True
-            )
-            if not serializer.is_valid():
-                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-            serializer.save()
+            config_qs = WhatsAppConfig.objects.all()
+            if user.role != 'SUPER_ADMIN':
+                config_qs = config_qs.filter(admin_owner=admin)
+            
+            config_obj = config_qs.first()
+            if not config_obj and user.role != 'SUPER_ADMIN':
+                config_obj = WhatsAppConfig.objects.create(admin_owner=admin)
+
+            if config_obj:
+                serializer = WhatsAppConfigSerializer(config_obj, data=data['config'], partial=True)
+                if not serializer.is_valid():
+                    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                serializer.save(admin_owner=admin if user.role != 'SUPER_ADMIN' else config_obj.admin_owner)
 
         # ── Save admin numbers ────────────────────────────────────────────
         if 'admin_numbers' in data:
-            # Replace all existing rows with the new list
-            WhatsAppAdminNumber.objects.all().delete()
+            # Replace all existing rows for this tenant
+            admin_num_qs = WhatsAppAdminNumber.objects.all()
+            if user.role != 'SUPER_ADMIN':
+                admin_num_qs = admin_num_qs.filter(admin_owner=admin)
+            admin_num_qs.delete()
+            
             for item in data['admin_numbers']:
-                item.pop('id', None)   # remove frontend-generated id
-                WhatsAppAdminNumber.objects.create(**item)
+                item.pop('id', None)
+                if user.role != 'SUPER_ADMIN':
+                    WhatsAppAdminNumber.objects.create(**item, admin_owner=admin)
+                else:
+                    WhatsAppAdminNumber.objects.create(**item)
 
         # ── Save notification purposes ────────────────────────────────────
         if 'purposes' in data:
             for item in data['purposes']:
+                lookup = {'key': item['key']}
+                if user.role != 'SUPER_ADMIN':
+                    lookup['admin_owner'] = admin
+
                 WhatsAppNotificationPurpose.objects.update_or_create(
-                    key=item['key'],
+                    **lookup,
                     defaults={
                         'label':            item.get('label', ''),
                         'icon':             item.get('icon', ''),
@@ -87,7 +133,6 @@ class WhatsAppTestView(APIView):
     def post(self, request):
         """
         Test the WhatsApp API connection for the given provider config.
-        Sends a test ping to the provider and returns success/failure.
         """
         config = request.data.get('config', {})
         provider   = config.get('provider', '')
@@ -126,14 +171,12 @@ class WhatsAppTestView(APIView):
                 )
 
             elif provider == 'twilio':
-                # Twilio uses Account SID as instance_id and Auth Token as api_token
                 from twilio.rest import Client
                 client = Client(instance_id, api_token)
                 client.api.accounts(instance_id).fetch()
                 return Response({'detail': 'Twilio connection successful!'})
 
             elif provider == 'meta':
-                # instance_id = Phone Number ID, api_token = permanent access token
                 url  = f"https://graph.facebook.com/v18.0/{instance_id}"
                 resp = requests.get(
                     url,
@@ -148,7 +191,6 @@ class WhatsAppTestView(APIView):
                 )
 
             elif provider == 'wablas':
-                # instance_id = domain URL
                 url  = f"{instance_id.rstrip('/')}/api/device/info"
                 resp = requests.get(
                     url,
@@ -163,7 +205,6 @@ class WhatsAppTestView(APIView):
                 )
 
             else:
-                # Custom provider — just verify credentials are present
                 return Response({'detail': 'Credentials saved. Cannot auto-test custom providers.'})
 
         except requests.exceptions.ConnectionError:

@@ -5,7 +5,7 @@ from django.conf import settings
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import status, permissions
 
 from .models import Candidate, CandidateRating, OfferLetter, PipelineStage
 from .serializers import (
@@ -14,6 +14,33 @@ from .serializers import (
 )
 from .utils import extract_text, extract_fields
 from .offer_pdf import generate_offer_letter_pdf
+
+# ─────────────────────────────────────────────────────────────
+#  Tenant helpers
+# ─────────────────────────────────────────────────────────────
+
+def _get_admin_owner(user):
+    if user.role == 'ADMIN':
+        return user
+    if user.role == 'USER':
+        return user.admin_owner
+    return None
+
+def _pipeline_stage_qs(user):
+    if user.role == 'SUPER_ADMIN':
+        return PipelineStage.objects.all()
+    admin = _get_admin_owner(user)
+    if admin is None:
+        return PipelineStage.objects.none()
+    return PipelineStage.objects.filter(admin_owner=admin)
+
+def _candidate_qs(user):
+    if user.role == 'SUPER_ADMIN':
+        return Candidate.objects.all()
+    admin = _get_admin_owner(user)
+    if admin is None:
+        return Candidate.objects.none()
+    return Candidate.objects.filter(admin_owner=admin)
 
 # ─────────────────────────────────────────────────────────────
 #  Fixed (built-in) stage keys — these cannot be deleted
@@ -30,9 +57,10 @@ class PipelineStageListView(APIView):
     GET  /pipeline-stages/  → returns all custom stages ordered by `order`
     POST /pipeline-stages/  → create a new custom stage
     """
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        stages = PipelineStage.objects.all()
+        stages = _pipeline_stage_qs(request.user)
         return Response(PipelineStageSerializer(stages, many=True).data)
 
     def post(self, request):
@@ -45,7 +73,8 @@ class PipelineStageListView(APIView):
             )
         serializer = PipelineStageSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save()
+            admin = _get_admin_owner(request.user)
+            serializer.save(admin_owner=admin)
             return Response(serializer.data, status=201)
         return Response(serializer.errors, status=400)
 
@@ -55,15 +84,16 @@ class PipelineStageDetailView(APIView):
     PATCH  /pipeline-stages/<pk>/  → rename or reorder a custom stage
     DELETE /pipeline-stages/<pk>/  → remove a custom stage
     """
+    permission_classes = [permissions.IsAuthenticated]
 
-    def _get_stage(self, pk):
+    def _get_stage(self, request, pk):
         try:
-            return PipelineStage.objects.get(pk=pk)
+            return _pipeline_stage_qs(request.user).get(pk=pk)
         except PipelineStage.DoesNotExist:
             return None
 
     def patch(self, request, pk):
-        stage = self._get_stage(pk)
+        stage = self._get_stage(request, pk)
         if not stage:
             return Response({"error": "Stage not found"}, status=404)
 
@@ -74,12 +104,12 @@ class PipelineStageDetailView(APIView):
         return Response(serializer.errors, status=400)
 
     def delete(self, request, pk):
-        stage = self._get_stage(pk)
+        stage = self._get_stage(request, pk)
         if not stage:
             return Response({"error": "Stage not found"}, status=404)
 
         # Move any candidates still in this stage back to 'uploaded'
-        Candidate.objects.filter(status=stage.key).update(status="uploaded")
+        _candidate_qs(request.user).filter(status=stage.key).update(status="uploaded")
 
         stage.delete()
         return Response({"success": True})
@@ -90,6 +120,8 @@ class PipelineStageDetailView(APIView):
 # ─────────────────────────────────────────────────────────────
 
 class CandidateUploadView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
     def post(self, request):
         file = request.FILES.get("cv")
         if not file:
@@ -111,30 +143,35 @@ class CandidateUploadView(APIView):
 
         serializer = CandidateSerializer(data=data)
         if serializer.is_valid():
-            serializer.save()
+            admin = _get_admin_owner(request.user)
+            serializer.save(admin_owner=admin)
             return Response(serializer.data)
         return Response(serializer.errors, status=400)
 
 
 class CandidateListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
     def get(self, request):
-        candidates = Candidate.objects.all().order_by("-created_at")
+        candidates = _candidate_qs(request.user).order_by("-created_at")
         return Response(CandidateSerializer(candidates, many=True).data)
 
 
 class CandidateStatusUpdateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
     def patch(self, request, pk):
         new_status = request.data.get("status")
 
         # Allow fixed stages and any existing custom stage key
         valid_custom_keys = set(
-            PipelineStage.objects.values_list("key", flat=True)
+            _pipeline_stage_qs(request.user).values_list("key", flat=True)
         )
         if new_status not in FIXED_STAGES and new_status not in valid_custom_keys:
             return Response({"error": f"Invalid status '{new_status}'"}, status=400)
 
         try:
-            candidate = Candidate.objects.get(pk=pk)
+            candidate = _candidate_qs(request.user).get(pk=pk)
         except Candidate.DoesNotExist:
             return Response({"error": "Candidate not found"}, status=404)
 
@@ -144,9 +181,11 @@ class CandidateStatusUpdateView(APIView):
 
 
 class CandidateUpdateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
     def patch(self, request, pk):
         try:
-            candidate = Candidate.objects.get(pk=pk)
+            candidate = _candidate_qs(request.user).get(pk=pk)
             fields = ["name", "email", "phone", "location", "role", "experience", "education", "skills"]
             for field in fields:
                 if field in request.data:
@@ -158,14 +197,26 @@ class CandidateUpdateView(APIView):
 
 
 class CandidateRatingView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
     def get(self, request, candidate_id):
-        rating = CandidateRating.objects.filter(candidate_id=candidate_id).first()
+        try:
+            candidate = _candidate_qs(request.user).get(id=candidate_id)
+        except Candidate.DoesNotExist:
+            return Response({"error": "Candidate not found"}, status=404)
+        
+        rating = CandidateRating.objects.filter(candidate=candidate).first()
         if not rating:
             return Response({})
         return Response(CandidateRatingSerializer(rating).data)
 
     def post(self, request, candidate_id):
-        rating, _ = CandidateRating.objects.get_or_create(candidate_id=candidate_id)
+        try:
+            candidate = _candidate_qs(request.user).get(id=candidate_id)
+        except Candidate.DoesNotExist:
+            return Response({"error": "Candidate not found"}, status=404)
+
+        rating, _ = CandidateRating.objects.get_or_create(candidate=candidate)
         serializer = CandidateRatingSerializer(rating, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
@@ -177,16 +228,23 @@ class CandidateRatingView(APIView):
 # ─────────────────────────────────────────────────────────────
 
 class OfferLetterView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
     def get(self, request, candidate_id):
         try:
-            offer = OfferLetter.objects.get(candidate_id=candidate_id)
+            candidate = _candidate_qs(request.user).get(id=candidate_id)
+        except Candidate.DoesNotExist:
+            return Response({"error": "Candidate not found"}, status=404)
+
+        try:
+            offer = OfferLetter.objects.get(candidate=candidate)
             return Response(OfferLetterSerializer(offer).data)
         except OfferLetter.DoesNotExist:
             return Response({})
 
     def post(self, request, candidate_id):
         try:
-            candidate = Candidate.objects.get(pk=candidate_id)
+            candidate = _candidate_qs(request.user).get(pk=candidate_id)
         except Candidate.DoesNotExist:
             return Response({"error": "Candidate not found"}, status=404)
 
@@ -205,9 +263,11 @@ class OfferLetterView(APIView):
 
 
 class DownloadOfferLetterView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
     def get(self, request, candidate_id):
         try:
-            candidate = Candidate.objects.get(pk=candidate_id)
+            candidate = _candidate_qs(request.user).get(pk=candidate_id)
         except Candidate.DoesNotExist:
             return Response({"error": "Candidate not found"}, status=404)
 
@@ -234,9 +294,11 @@ class DownloadOfferLetterView(APIView):
 
 
 class SendOfferLetterView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
     def post(self, request, candidate_id):
         try:
-            candidate = Candidate.objects.get(pk=candidate_id)
+            candidate = _candidate_qs(request.user).get(pk=candidate_id)
         except Candidate.DoesNotExist:
             return Response({"error": "Candidate not found"}, status=404)
 
