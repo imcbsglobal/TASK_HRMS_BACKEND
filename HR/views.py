@@ -196,6 +196,19 @@ class CandidateUpdateView(APIView):
             return Response({"error": "Candidate not found"}, status=404)
 
 
+class CandidateDeleteView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, pk):
+        try:
+            candidate = _candidate_qs(request.user).get(pk=pk)
+        except Candidate.DoesNotExist:
+            return Response({"error": "Candidate not found"}, status=404)
+
+        candidate.delete()   # signals in models.py auto-delete the CV from R2
+        return Response({"success": True}, status=200)
+
+
 class CandidateRatingView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
