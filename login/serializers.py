@@ -16,6 +16,7 @@ class UserSerializer(serializers.ModelSerializer):
             'id', 'username', 'first_name', 'last_name',
             'email', 'role', 'profile_image', 'is_active',
             'plain_password', 'work_location', 'client_id', 'admin_owner',
+            'company_name',
         )
 
     def get_profile_image(self, obj):
@@ -29,21 +30,56 @@ class UserSerializer(serializers.ModelSerializer):
 # Create  –  POST /users/create/
 # ---------------------------------------------------------------------------
 class UserCreateSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True)
+    password  = serializers.CharField(write_only=True)
+    # Allow the caller (Super Admin) to supply a pre-validated client_id
+    # coming from the license server.  The field is optional; if omitted the
+    # model's save() method will auto-generate one as before.
+    client_id    = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    company_name = serializers.CharField(required=False, allow_blank=True, default='')
 
     class Meta:
         model  = User
         fields = [
             'id', 'username', 'password', 'first_name', 'last_name',
             'email', 'role', 'profile_image', 'is_active', 'work_location',
-            'admin_owner',
+            'admin_owner', 'client_id', 'company_name',
         ]
-        # client_id is intentionally excluded – it is auto-generated in model.save()
+
+    def validate_client_id(self, value):
+        """
+        If a client_id is provided, make sure it is not already taken by
+        another account (prevents duplicate-key errors at the DB level).
+        """
+        if value:
+            # Check for existing users with this client_id, excluding the
+            # instance being updated (not relevant for creates, but safe).
+            instance = getattr(self, 'instance', None)
+            qs = User.objects.filter(client_id=value)
+            if instance:
+                qs = qs.exclude(pk=instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError(
+                    "An admin account with this Client ID already exists."
+                )
+        return value or None
 
     def create(self, validated_data):
         plain_pwd = validated_data.get('password', '')
+        # Pop client_id so create_user doesn't try to pass it as an unknown kwarg.
+        supplied_client_id = validated_data.pop('client_id', None)
+        company_name       = validated_data.pop('company_name', '')
+
         user = User.objects.create_user(**validated_data)
         user.plain_password = plain_pwd
+
+        # If the caller supplied a specific client_id (from the license server),
+        # overwrite the auto-generated one.
+        if supplied_client_id:
+            user.client_id = supplied_client_id
+
+        if company_name:
+            user.company_name = company_name
+
         user.save()
         return user
 

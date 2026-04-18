@@ -289,3 +289,38 @@ class UserDeleteView(APIView):
 
         user.delete()
         return Response({"message": "User deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
+
+# ---------------------------------------------------------------------------
+# License Proxy – GET /api/license/customers/
+#
+# Proxies the request to the external license server so the browser never
+# has to make a cross-origin request (which would be blocked by CORS).
+# Only SUPER_ADMIN can call this endpoint.
+# ---------------------------------------------------------------------------
+import requests as http_requests
+
+class LicenseCustomersProxyView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    LICENSE_API_URL = "https://activate.imcbs.com/mobileapp/api/project/hrms/"
+
+    def get(self, request):
+        if request.user.role != 'SUPER_ADMIN':
+            return Response(
+                {"detail": "Only Super Admins can access license data."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        try:
+            resp = http_requests.get(self.LICENSE_API_URL, timeout=10)
+            resp.raise_for_status()
+            return Response(resp.json(), status=resp.status_code)
+        except http_requests.exceptions.Timeout:
+            return Response(
+                {"detail": "License server timed out. Please try again."},
+                status=status.HTTP_504_GATEWAY_TIMEOUT,
+            )
+        except http_requests.exceptions.RequestException as e:
+            return Response(
+                {"detail": f"Could not reach license server: {str(e)}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )

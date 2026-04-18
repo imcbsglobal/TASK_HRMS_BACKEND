@@ -70,6 +70,9 @@ class User(AbstractBaseUser, PermissionsMixin):
     # WARNING: plain-text password storage — development only!
     plain_password = models.CharField(max_length=128, blank=True, default='')
 
+    # Company name fetched from the license server at admin creation time
+    company_name = models.CharField(max_length=255, blank=True, default='')
+
     # ── Tenant isolation ──────────────────────────────────────────────────────
     # Every USER belongs to the ADMIN who created them.
     # ADMIN and SUPER_ADMIN rows have this NULL.
