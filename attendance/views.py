@@ -1226,44 +1226,54 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
         if not face_data.reference_image:
             return False, 'Face data is invalid.'
             
-        ref_image_url = face_data.reference_image.url
         try:
-            if ref_image_url.startswith('http'):
-                r = requests.get(ref_image_url)
-                ref_img_content = r.content
-            else:
-                ref_img_content = face_data.reference_image.read()
-        except Exception:
-            return False, 'Failed to load reference face.'
+            # Use Django's storage abstraction to read the file
+            with face_data.reference_image.open('rb') as f:
+                ref_img_content = f.read()
+        except Exception as e:
+            return False, f'Failed to load reference face: {str(e)}'
             
         try:
-            if isinstance(incoming_image_data, str) and ',' in incoming_image_data:
-                incoming_image_data = incoming_image_data.split(',')[1]
-            
+            # Handle incoming image (can be base64 or file upload)
             if isinstance(incoming_image_data, str):
+                if ',' in incoming_image_data:
+                    incoming_image_data = incoming_image_data.split(',')[1]
                 incoming_img_content = base64.b64decode(incoming_image_data)
             else:
                 incoming_img_content = incoming_image_data.read()
-        except Exception:
-            return False, 'Invalid incoming image format.'
+        except Exception as e:
+            return False, f'Invalid incoming image format: {str(e)}'
             
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as ref_tmp, tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as inc_tmp:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as ref_tmp, \
+             tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as inc_tmp:
             ref_tmp.write(ref_img_content)
             inc_tmp.write(incoming_img_content)
             ref_path = ref_tmp.name
             inc_path = inc_tmp.name
             
         verified = False
+        message = 'Face doesnt matches'
         try:
-            result = DeepFace.verify(img1_path=inc_path, img2_path=ref_path, model_name='VGG-Face', enforce_detection=False)
+            # model_name 'VGG-Face' is a common and reliable choice
+            result = DeepFace.verify(
+                img1_path=inc_path, 
+                img2_path=ref_path, 
+                model_name='VGG-Face', 
+                enforce_detection=False
+            )
             verified = result.get('verified', False)
         except Exception as e:
             verified = False
+            # Differentiate between a mismatch and a crash (e.g. missing weights)
+            message = f'Face verification error: {str(e)}'
         finally:
-            os.remove(ref_path)
-            os.remove(inc_path)
+            try:
+                if os.path.exists(ref_path): os.remove(ref_path)
+                if os.path.exists(inc_path): os.remove(inc_path)
+            except:
+                pass
             
-        return verified, 'Face doesnt matches' if not verified else 'Verified'
+        return verified, message if not verified else 'Verified'
 
     @action(detail=False, methods=['post'], url_path='check-in')
     def check_in(self, request):
