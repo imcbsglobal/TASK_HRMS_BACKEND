@@ -1333,4 +1333,4 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
         }
         request._full_data = mutable_data
         
-        return attendance_view.check_out(request)
+        return attendance_view.check_out(request)
