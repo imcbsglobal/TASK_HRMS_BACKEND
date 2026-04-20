@@ -9,7 +9,8 @@ from .views import (
     AttendanceSettingsViewSet,
     LeaveRequestViewSet,
     LateArrivalRequestViewSet,
-    EarlyDepartureRequestViewSet,          # ← NEW
+    EarlyDepartureRequestViewSet,
+    FaceRecognitionViewSet,
 )
 
 router = DefaultRouter()
@@ -17,8 +18,9 @@ router = DefaultRouter()
 # Register specific prefixes BEFORE the catch-all attendance router
 router.register(r'leave-requests',           LeaveRequestViewSet,          basename='leave-requests')
 router.register(r'late-arrival-requests',    LateArrivalRequestViewSet,    basename='late-arrival-requests')
-router.register(r'early-departure-requests', EarlyDepartureRequestViewSet, basename='early-departure-requests')  # ← NEW
+router.register(r'early-departure-requests', EarlyDepartureRequestViewSet, basename='early-departure-requests')
 router.register(r'settings',                 AttendanceSettingsViewSet,    basename='attendance-settings')
+router.register(r'face',                     FaceRecognitionViewSet,       basename='face')
 router.register(r'',                         AttendanceViewSet,            basename='attendance')
 
 urlpatterns = [

@@ -9,7 +9,17 @@ from datetime import datetime, timedelta
 from calendar import monthrange
 import pytz
 
-from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest
+import tempfile
+import os
+import base64
+import requests
+from django.core.files.base import ContentFile
+try:
+    from deepface import DeepFace
+except ImportError:
+    pass
+
+from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest, EmployeeFaceData
 from .geofence import validate_geofence
 from .serializers import (
     AttendanceSerializer, CheckInSerializer, CheckOutSerializer,
@@ -1165,3 +1175,152 @@ class EarlyDepartureRequestViewSet(viewsets.ModelViewSet):
             'message': message,
             'early_departure_request': EarlyDepartureRequestSerializer(early_req).data,
         }, status=status.HTTP_200_OK)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FACE RECOGNITION VIEWSET
+# ─────────────────────────────────────────────────────────────────────────────
+
+class FaceRecognitionViewSet(viewsets.ViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @action(detail=False, methods=['post'], url_path='register-face')
+    def register_face(self, request):
+        if not _is_admin(request.user):
+            return Response({'error': 'Only admins can register face.'}, status=status.HTTP_403_FORBIDDEN)
+        
+        user_id = request.data.get('user_id')
+        image_data = request.FILES.get('image') or request.data.get('image') # Support file upload or base64
+        
+        if not user_id or not image_data:
+            return Response({'error': 'user_id and image are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            target_user = get_user_model().objects.get(pk=user_id, admin_owner=_get_admin_owner(request.user))
+        except get_user_model().DoesNotExist:
+            return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+            
+        face_data, _ = EmployeeFaceData.objects.get_or_create(
+            user=target_user,
+            admin_owner=_get_admin_owner(request.user)
+        )
+        
+        if isinstance(image_data, str) and image_data.startswith('data:image'):
+            # Base64 string
+            format, imgstr = image_data.split(';base64,')
+            ext = format.split('/')[-1]
+            face_data.reference_image.save(f"face_{user_id}.{ext}", ContentFile(base64.b64decode(imgstr)), save=True)
+        else:
+            # InMemoryUploadedFile
+            face_data.reference_image = image_data
+            face_data.save()
+            
+        return Response({'message': 'Face registered successfully!'})
+        
+    def _verify_face(self, user, incoming_image_data):
+        try:
+            face_data = EmployeeFaceData.objects.get(user=user)
+        except EmployeeFaceData.DoesNotExist:
+            return False, 'Face not registered. Please contact Admin.'
+            
+        if not face_data.reference_image:
+            return False, 'Face data is invalid.'
+            
+        ref_image_url = face_data.reference_image.url
+        try:
+            if ref_image_url.startswith('http'):
+                r = requests.get(ref_image_url)
+                ref_img_content = r.content
+            else:
+                ref_img_content = face_data.reference_image.read()
+        except Exception:
+            return False, 'Failed to load reference face.'
+            
+        try:
+            if isinstance(incoming_image_data, str) and ',' in incoming_image_data:
+                incoming_image_data = incoming_image_data.split(',')[1]
+            
+            if isinstance(incoming_image_data, str):
+                incoming_img_content = base64.b64decode(incoming_image_data)
+            else:
+                incoming_img_content = incoming_image_data.read()
+        except Exception:
+            return False, 'Invalid incoming image format.'
+            
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as ref_tmp, tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as inc_tmp:
+            ref_tmp.write(ref_img_content)
+            inc_tmp.write(incoming_img_content)
+            ref_path = ref_tmp.name
+            inc_path = inc_tmp.name
+            
+        verified = False
+        try:
+            result = DeepFace.verify(img1_path=inc_path, img2_path=ref_path, model_name='VGG-Face', enforce_detection=False)
+            verified = result.get('verified', False)
+        except Exception as e:
+            verified = False
+        finally:
+            os.remove(ref_path)
+            os.remove(inc_path)
+            
+        return verified, 'Face doesnt matches' if not verified else 'Verified'
+
+    @action(detail=False, methods=['post'], url_path='check-in')
+    def check_in(self, request):
+        user = request.user
+        image_data = request.data.get('image') or request.FILES.get('image')
+        notes = request.data.get('notes', '')
+        latitude = request.data.get('latitude')
+        longitude = request.data.get('longitude')
+        address = request.data.get('address', '')
+        
+        if not image_data:
+            return Response({'error': 'Image is required for face check-in.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        verified, msg = self._verify_face(user, image_data)
+        if not verified:
+            return Response({'error': msg}, status=status.HTTP_403_FORBIDDEN)
+            
+        # Call existing check-in logic
+        attendance_view = AttendanceViewSet()
+        attendance_view.request = request
+        attendance_view.format_kwarg = None
+        # We need to recreate the request data to match check in serializer expectations
+        mutable_data = {
+            'notes': notes,
+            'latitude': latitude,
+            'longitude': longitude,
+            'address': address
+        }
+        request._full_data = mutable_data
+        
+        return attendance_view.check_in(request)
+
+    @action(detail=False, methods=['post'], url_path='check-out')
+    def check_out(self, request):
+        user = request.user
+        image_data = request.data.get('image') or request.FILES.get('image')
+        notes = request.data.get('notes', '')
+        latitude = request.data.get('latitude')
+        longitude = request.data.get('longitude')
+        address = request.data.get('address', '')
+        
+        if not image_data:
+            return Response({'error': 'Image is required for face check-out.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        verified, msg = self._verify_face(user, image_data)
+        if not verified:
+            return Response({'error': msg}, status=status.HTTP_403_FORBIDDEN)
+            
+        attendance_view = AttendanceViewSet()
+        attendance_view.request = request
+        attendance_view.format_kwarg = None
+        mutable_data = {
+            'notes': notes,
+            'latitude': latitude,
+            'longitude': longitude,
+            'address': address
+        }
+        request._full_data = mutable_data
+        
+        return attendance_view.check_out(request)

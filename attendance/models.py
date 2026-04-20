@@ -283,3 +283,19 @@ class EarlyDepartureRequest(models.Model):
             f"{self.user.username} – {self.date} "
             f"@ {self.expected_departure_time} ({self.status})"
         )
+
+
+class EmployeeFaceData(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='face_data')
+    admin_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='owned_face_data',
+        null=True, blank=True,
+    )
+    reference_image = models.ImageField(upload_to='face_data/')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Face Data for {self.user.username}"

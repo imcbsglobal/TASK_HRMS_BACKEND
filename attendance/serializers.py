@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest
+from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest, EmployeeFaceData
 from django.utils import timezone
 from datetime import datetime, timedelta
 import pytz
@@ -511,3 +511,13 @@ class EarlyDepartureApprovalSerializer(serializers.Serializer):
                 "Only admins can approve/reject early departure requests."
             )
         return data
+
+
+class EmployeeFaceDataSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EmployeeFaceData
+        fields = ['id', 'user', 'admin_owner', 'reference_image', 'created_at', 'updated_at']
+        read_only_fields = ['created_at', 'updated_at']
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
