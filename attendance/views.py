@@ -14,10 +14,8 @@ import os
 import base64
 import requests
 from django.core.files.base import ContentFile
-try:
-    from deepface import DeepFace
-except ImportError:
-    pass
+from deepface import DeepFace
+
 
 from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest, EmployeeFaceData
 from .geofence import validate_geofence
