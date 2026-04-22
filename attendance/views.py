@@ -1182,6 +1182,25 @@ class EarlyDepartureRequestViewSet(viewsets.ModelViewSet):
 class FaceRecognitionViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
+    @action(detail=False, methods=['get'], url_path='face-status')
+    def face_status(self, request):
+        """
+        Returns a mapping of user_id -> face_registered (bool) for all users
+        belonging to this admin's tenant.
+        GET /attendance/face/face-status/
+        """
+        if not _is_admin(request.user):
+            return Response({'error': 'Admins only.'}, status=status.HTTP_403_FORBIDDEN)
+
+        admin_owner = _get_admin_owner(request.user)
+        registered_ids = set(
+            EmployeeFaceData.objects.filter(
+                admin_owner=admin_owner,
+                reference_image__isnull=False,
+            ).exclude(reference_image='').values_list('user_id', flat=True)
+        )
+        return Response({'face_registered_user_ids': list(registered_ids)})
+
     @action(detail=False, methods=['post'], url_path='register-face')
     def register_face(self, request):
         if not _is_admin(request.user):
@@ -1198,9 +1217,11 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
         except get_user_model().DoesNotExist:
             return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
             
+        # Lookup only by user (OneToOneField) so re-registration doesn't
+        # create a duplicate when admin_owner happens to differ.
         face_data, _ = EmployeeFaceData.objects.get_or_create(
             user=target_user,
-            admin_owner=_get_admin_owner(request.user)
+            defaults={'admin_owner': _get_admin_owner(request.user)}
         )
         
         if isinstance(image_data, str) and image_data.startswith('data:image'):
@@ -1213,7 +1234,7 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
             face_data.reference_image = image_data
             face_data.save()
             
-        return Response({'message': 'Face registered successfully!'})
+        return Response({'message': 'Face registered successfully!', 'user_id': int(user_id), 'face_registered': True})
         
     def _verify_face(self, user, incoming_image_data):
         try:
@@ -1238,25 +1259,36 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
                     incoming_image_data = incoming_image_data.split(',')[1]
                 incoming_img_content = base64.b64decode(incoming_image_data)
             else:
+                # Seek to start in case the file pointer was advanced earlier
+                # (e.g. by request.data parsing or a previous .read() call)
+                if hasattr(incoming_image_data, 'seek'):
+                    incoming_image_data.seek(0)
                 incoming_img_content = incoming_image_data.read()
         except Exception as e:
             return False, f'Invalid incoming image format: {str(e)}'
             
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as ref_tmp, \
-             tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as inc_tmp:
+        # Write temp files first, close them, THEN pass paths to DeepFace.
+        # Keeping them open inside the with-block causes DeepFace to read
+        # empty files on some OS/filesystem combinations.
+        ref_tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg')
+        inc_tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg')
+        ref_path = ref_tmp.name
+        inc_path = inc_tmp.name
+        try:
             ref_tmp.write(ref_img_content)
             inc_tmp.write(incoming_img_content)
-            ref_path = ref_tmp.name
-            inc_path = inc_tmp.name
-            
+        finally:
+            ref_tmp.close()
+            inc_tmp.close()
+
         verified = False
         message = 'Face doesnt matches'
         try:
             # model_name 'VGG-Face' is a common and reliable choice
             result = DeepFace.verify(
-                img1_path=inc_path, 
-                img2_path=ref_path, 
-                model_name='VGG-Face', 
+                img1_path=inc_path,
+                img2_path=ref_path,
+                model_name='VGG-Face',
                 enforce_detection=False
             )
             verified = result.get('verified', False)
@@ -1268,7 +1300,7 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
             try:
                 if os.path.exists(ref_path): os.remove(ref_path)
                 if os.path.exists(inc_path): os.remove(inc_path)
-            except:
+            except Exception:
                 pass
             
         return verified, message if not verified else 'Verified'
@@ -1276,59 +1308,126 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
     @action(detail=False, methods=['post'], url_path='check-in')
     def check_in(self, request):
         user = request.user
-        image_data = request.data.get('image') or request.FILES.get('image')
+        image_data = request.FILES.get('image') or request.data.get('image')
         notes = request.data.get('notes', '')
         latitude = request.data.get('latitude')
         longitude = request.data.get('longitude')
         address = request.data.get('address', '')
-        
+
         if not image_data:
             return Response({'error': 'Image is required for face check-in.'}, status=status.HTTP_400_BAD_REQUEST)
-            
+
         verified, msg = self._verify_face(user, image_data)
         if not verified:
             return Response({'error': msg}, status=status.HTTP_403_FORBIDDEN)
-            
-        # Call existing check-in logic
-        attendance_view = AttendanceViewSet()
-        attendance_view.request = request
-        attendance_view.format_kwarg = None
-        # We need to recreate the request data to match check in serializer expectations
-        mutable_data = {
+
+        # Build the clean data dict and validate directly — avoids the broken
+        # request._full_data mutation which does not affect the already-parsed
+        # request.data cache in DRF.
+        clean_data = {
             'notes': notes,
             'latitude': latitude,
             'longitude': longitude,
-            'address': address
+            'address': address,
         }
-        request._full_data = mutable_data
-        
-        return attendance_view.check_in(request)
+
+        today = timezone.now().date()
+        current_time = timezone.now()
+        admin_owner = _get_admin_owner(user)
+
+        # Geofence enforcement runs first — no point hitting the DB for
+        # serializer validation if the location is already blocked.
+        settings_obj = AttendanceSettings.objects.filter(admin_owner=admin_owner).order_by('-id').first()
+        allowed, geo_error, _ = validate_geofence(user, latitude, longitude, settings_obj)
+        if not allowed:
+            return Response({'error': geo_error}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = CheckInSerializer(data=clean_data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+
+        attendance, created = Attendance.objects.get_or_create(
+            user=user,
+            date=today,
+            admin_owner=admin_owner,
+            defaults={
+                'check_in_time': current_time,
+                'notes': serializer.validated_data.get('notes', ''),
+                'status': 'present',
+                'check_in_latitude': serializer.validated_data.get('latitude'),
+                'check_in_longitude': serializer.validated_data.get('longitude'),
+                'check_in_address': serializer.validated_data.get('address', ''),
+            }
+        )
+
+        if not created:
+            if not attendance.check_in_time:
+                attendance.check_in_time = current_time
+                attendance.notes = serializer.validated_data.get('notes', '')
+                attendance.check_in_latitude = serializer.validated_data.get('latitude')
+                attendance.check_in_longitude = serializer.validated_data.get('longitude')
+                attendance.check_in_address = serializer.validated_data.get('address', '')
+                attendance.save()
+            else:
+                return Response({'error': 'Already checked in today'}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            'message': 'Successfully checked in',
+            'attendance': AttendanceSerializer(attendance).data
+        }, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['post'], url_path='check-out')
     def check_out(self, request):
         user = request.user
-        image_data = request.data.get('image') or request.FILES.get('image')
+        image_data = request.FILES.get('image') or request.data.get('image')
         notes = request.data.get('notes', '')
         latitude = request.data.get('latitude')
         longitude = request.data.get('longitude')
         address = request.data.get('address', '')
-        
+
         if not image_data:
             return Response({'error': 'Image is required for face check-out.'}, status=status.HTTP_400_BAD_REQUEST)
-            
+
         verified, msg = self._verify_face(user, image_data)
         if not verified:
             return Response({'error': msg}, status=status.HTTP_403_FORBIDDEN)
-            
-        attendance_view = AttendanceViewSet()
-        attendance_view.request = request
-        attendance_view.format_kwarg = None
-        mutable_data = {
+
+        clean_data = {
             'notes': notes,
             'latitude': latitude,
             'longitude': longitude,
-            'address': address
+            'address': address,
         }
-        request._full_data = mutable_data
-        
-        return attendance_view.check_out(request)
+
+        today = timezone.now().date()
+        current_time = timezone.now()
+        admin_owner = _get_admin_owner(user)
+
+        # Geofence enforcement runs first
+        settings_obj = AttendanceSettings.objects.filter(admin_owner=admin_owner).order_by('-id').first()
+        allowed, geo_error, _ = validate_geofence(user, latitude, longitude, settings_obj)
+        if not allowed:
+            return Response({'error': geo_error}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = CheckOutSerializer(data=clean_data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            attendance = Attendance.objects.get(user=user, date=today, admin_owner=admin_owner)
+        except Attendance.DoesNotExist:
+            return Response({'error': 'No check-in record found for today'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if attendance.check_out_time:
+            return Response({'error': 'Already checked out today'}, status=status.HTTP_400_BAD_REQUEST)
+
+        attendance.check_out_time = current_time
+        attendance.check_out_latitude = serializer.validated_data.get('latitude')
+        attendance.check_out_longitude = serializer.validated_data.get('longitude')
+        attendance.check_out_address = serializer.validated_data.get('address', '')
+        if serializer.validated_data.get('notes'):
+            attendance.notes = serializer.validated_data['notes']
+        attendance.save()
+
+        return Response({
+            'message': 'Successfully checked out',
+            'attendance': AttendanceSerializer(attendance).data
+        }, status=status.HTTP_200_OK)
