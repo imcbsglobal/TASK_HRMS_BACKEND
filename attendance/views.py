@@ -1205,105 +1205,216 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
     def register_face(self, request):
         if not _is_admin(request.user):
             return Response({'error': 'Only admins can register face.'}, status=status.HTTP_403_FORBIDDEN)
-        
-        user_id = request.data.get('user_id')
-        image_data = request.FILES.get('image') or request.data.get('image') # Support file upload or base64
-        
+
+        user_id   = request.data.get('user_id')
+        image_data = request.FILES.get('image') or request.data.get('image')
+
         if not user_id or not image_data:
             return Response({'error': 'user_id and image are required.'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         try:
             target_user = get_user_model().objects.get(pk=user_id, admin_owner=_get_admin_owner(request.user))
         except get_user_model().DoesNotExist:
             return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
-            
-        # Lookup only by user (OneToOneField) so re-registration doesn't
-        # create a duplicate when admin_owner happens to differ.
-        face_data, _ = EmployeeFaceData.objects.get_or_create(
+
+        # ── Decode image bytes (base64 or uploaded file) ──────────────────────
+        try:
+            img_bytes = self._load_image_bytes(image_data)
+        except Exception as e:
+            return Response({'error': f'Invalid image data: {e}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # ── Quality gate: ensure exactly ONE face is detectable before saving ─
+        # This prevents registering blurry, multi-person, or obstructed photos
+        # which are the #1 cause of downstream false positives.
+        tmp_path = self._write_temp(img_bytes, suffix='.jpg')
+        try:
+            faces = DeepFace.extract_faces(
+                img_path=tmp_path,
+                detector_backend='retinaface',   # most accurate detector
+                enforce_detection=True,
+                align=True,
+            )
+            if len(faces) == 0:
+                return Response(
+                    {'error': 'No face detected in the image. Please use a clear, well-lit photo with the face centred.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if len(faces) > 1:
+                return Response(
+                    {'error': f'{len(faces)} faces detected. Please upload a photo with only one person.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            # Confidence guard: retinaface returns a 'confidence' key (0–1)
+            confidence = faces[0].get('confidence', 1.0)
+            if confidence < 0.90:
+                return Response(
+                    {'error': f'Face confidence too low ({confidence:.0%}). Please use a clearer, better-lit photo.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        except Exception as e:
+            err_str = str(e)
+            if 'Face could not be detected' in err_str or 'cannot be detected' in err_str.lower():
+                return Response(
+                    {'error': 'Face could not be detected. Ensure the photo is well-lit, faces the camera directly, and has no obstructions.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            return Response({'error': f'Face validation error: {err_str}'}, status=status.HTTP_400_BAD_REQUEST)
+        finally:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+
+        # ── Save the validated reference image ────────────────────────────────
+        face_obj, _ = EmployeeFaceData.objects.get_or_create(
             user=target_user,
-            defaults={'admin_owner': _get_admin_owner(request.user)}
+            defaults={'admin_owner': _get_admin_owner(request.user)},
         )
-        
-        if isinstance(image_data, str) and image_data.startswith('data:image'):
-            # Base64 string
-            format, imgstr = image_data.split(';base64,')
-            ext = format.split('/')[-1]
-            face_data.reference_image.save(f"face_{user_id}.{ext}", ContentFile(base64.b64decode(imgstr)), save=True)
-        else:
-            # InMemoryUploadedFile
-            face_data.reference_image = image_data
-            face_data.save()
-            
+        face_obj.reference_image.save(
+            f'face_{user_id}.jpg',
+            ContentFile(img_bytes),
+            save=True,
+        )
+
         return Response({'message': 'Face registered successfully!', 'user_id': int(user_id), 'face_registered': True})
         
+    # ── Strict thresholds per model (lower distance = more similar) ──────────
+    # These are tighter than DeepFace defaults to eliminate false positives.
+    # VGG-Face default is 0.40 (cosine); we use 0.30.
+    # Facenet512 default is 0.30; we use 0.25.
+    # Both models must agree for a match.
+    _FACE_MODELS = [
+        {'model': 'VGG-Face',    'metric': 'cosine',    'threshold': 0.30},
+        {'model': 'Facenet512',  'metric': 'cosine',    'threshold': 0.25},
+    ]
+
+    def _load_image_bytes(self, image_data):
+        """
+        Accept a base64 string (with or without data-URI prefix) or a Django
+        UploadedFile / any file-like object.  Returns raw JPEG/PNG bytes.
+        """
+        if isinstance(image_data, str):
+            if ',' in image_data:
+                image_data = image_data.split(',', 1)[1]
+            return base64.b64decode(image_data)
+        if hasattr(image_data, 'seek'):
+            image_data.seek(0)
+        return image_data.read()
+
+    def _write_temp(self, content: bytes, suffix='.jpg') -> str:
+        """Write bytes to a named temp file and return the path (caller must delete)."""
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        try:
+            tmp.write(content)
+        finally:
+            tmp.close()
+        return tmp.name
+
     def _verify_face(self, user, incoming_image_data):
+        """
+        Two-model cross-check with strict cosine-distance thresholds.
+
+        A match is accepted ONLY if BOTH VGG-Face AND Facenet512 independently
+        confirm the same identity AND each model's distance is below its
+        configured threshold.  This eliminates the false-positive case where
+        two visually similar people pass a single-model check.
+        """
+        # ── 1. Load stored reference image ───────────────────────────────────
         try:
             face_data = EmployeeFaceData.objects.get(user=user)
         except EmployeeFaceData.DoesNotExist:
             return False, 'Face not registered. Please contact Admin.'
-            
-        if not face_data.reference_image:
-            return False, 'Face data is invalid.'
-            
-        try:
-            # Use Django's storage abstraction to read the file
-            with face_data.reference_image.open('rb') as f:
-                ref_img_content = f.read()
-        except Exception as e:
-            return False, f'Failed to load reference face: {str(e)}'
-            
-        try:
-            # Handle incoming image (can be base64 or file upload)
-            if isinstance(incoming_image_data, str):
-                if ',' in incoming_image_data:
-                    incoming_image_data = incoming_image_data.split(',')[1]
-                incoming_img_content = base64.b64decode(incoming_image_data)
-            else:
-                # Seek to start in case the file pointer was advanced earlier
-                # (e.g. by request.data parsing or a previous .read() call)
-                if hasattr(incoming_image_data, 'seek'):
-                    incoming_image_data.seek(0)
-                incoming_img_content = incoming_image_data.read()
-        except Exception as e:
-            return False, f'Invalid incoming image format: {str(e)}'
-            
-        # Write temp files first, close them, THEN pass paths to DeepFace.
-        # Keeping them open inside the with-block causes DeepFace to read
-        # empty files on some OS/filesystem combinations.
-        ref_tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg')
-        inc_tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg')
-        ref_path = ref_tmp.name
-        inc_path = inc_tmp.name
-        try:
-            ref_tmp.write(ref_img_content)
-            inc_tmp.write(incoming_img_content)
-        finally:
-            ref_tmp.close()
-            inc_tmp.close()
 
-        verified = False
-        message = 'Face doesnt matches'
+        if not face_data.reference_image:
+            return False, 'Face data is invalid or missing.'
+
         try:
-            # model_name 'VGG-Face' is a common and reliable choice
-            result = DeepFace.verify(
-                img1_path=inc_path,
-                img2_path=ref_path,
-                model_name='VGG-Face',
-                enforce_detection=False
-            )
-            verified = result.get('verified', False)
+            with face_data.reference_image.open('rb') as f:
+                ref_bytes = f.read()
         except Exception as e:
-            verified = False
-            # Differentiate between a mismatch and a crash (e.g. missing weights)
-            message = f'Face verification error: {str(e)}'
+            return False, f'Failed to load reference face: {e}'
+
+        # ── 2. Decode incoming image ──────────────────────────────────────────
+        try:
+            inc_bytes = self._load_image_bytes(incoming_image_data)
+        except Exception as e:
+            return False, f'Invalid incoming image: {e}'
+
+        if not inc_bytes:
+            return False, 'Empty image received.'
+
+        # ── 3. Write temp files (closed before DeepFace reads them) ──────────
+        ref_path = self._write_temp(ref_bytes, suffix='.jpg')
+        inc_path = self._write_temp(inc_bytes, suffix='.jpg')
+
+        results = []
+        error_messages = []
+
+        try:
+            for cfg in self._FACE_MODELS:
+                model_name = cfg['model']
+                metric     = cfg['metric']
+                threshold  = cfg['threshold']
+                try:
+                    result = DeepFace.verify(
+                        img1_path=inc_path,
+                        img2_path=ref_path,
+                        model_name=model_name,
+                        distance_metric=metric,
+                        # enforce_detection=True: reject blurry/partial/no-face images.
+                        # This is intentionally strict — if a face cannot be cleanly
+                        # detected we must not allow access.
+                        enforce_detection=True,
+                        # align=True improves accuracy for off-angle faces.
+                        align=True,
+                    )
+                    distance = result.get('distance', 1.0)
+                    # Apply our own tighter threshold on top of DeepFace's decision.
+                    passed = result.get('verified', False) and (distance <= threshold)
+                    results.append({
+                        'model': model_name,
+                        'distance': round(distance, 4),
+                        'threshold': threshold,
+                        'passed': passed,
+                    })
+                except Exception as e:
+                    err_str = str(e)
+                    # "Face could not be detected" means a real quality failure —
+                    # treat it as a hard rejection rather than silently skipping.
+                    if 'Face could not be detected' in err_str or 'cannot be detected' in err_str.lower():
+                        return False, (
+                            'Face not clearly detected. Please ensure good lighting, '
+                            'face the camera directly, and remove obstructions.'
+                        )
+                    error_messages.append(f'{model_name}: {err_str}')
+
         finally:
-            try:
-                if os.path.exists(ref_path): os.remove(ref_path)
-                if os.path.exists(inc_path): os.remove(inc_path)
-            except Exception:
-                pass
-            
-        return verified, message if not verified else 'Verified'
+            for p in (ref_path, inc_path):
+                try:
+                    if os.path.exists(p):
+                        os.remove(p)
+                except Exception:
+                    pass
+
+        if error_messages and not results:
+            return False, f'Face verification error: {"; ".join(error_messages)}'
+
+        # ── 4. Require ALL models to pass (AND logic) ─────────────────────────
+        # If any model is unavailable (error), we fail safe.
+        if len(results) < len(self._FACE_MODELS):
+            return False, 'One or more face models could not run. Please try again.'
+
+        all_passed = all(r['passed'] for r in results)
+        if all_passed:
+            return True, 'Verified'
+
+        # Provide a helpful distance summary in the rejection message (useful for debugging).
+        summary = ', '.join(
+            f"{r['model']}={r['distance']:.3f}/{'OK' if r['passed'] else 'FAIL'}"
+            for r in results
+        )
+        return False, f'Face does not match. ({summary})'
 
     @action(detail=False, methods=['post'], url_path='check-in')
     def check_in(self, request):
