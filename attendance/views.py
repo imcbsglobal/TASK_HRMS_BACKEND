@@ -12,9 +12,21 @@ import pytz
 import tempfile
 import os
 import base64
+import json
 import requests
+import numpy as np
 from django.core.files.base import ContentFile
 from deepface import DeepFace
+
+# ── Fix 1: Pre-load Facenet512 model at server startup ────────────────────────
+# DeepFace loads the neural network from disk on the first call (~10-25s).
+# Building it here means that cost is paid once when Django starts, not on
+# every employee punch.  Subsequent calls reuse the in-memory model instantly.
+try:
+    DeepFace.build_model('Facenet512')
+except Exception:
+    pass  # Non-fatal — model will lazy-load on first use if this fails
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest, EmployeeFaceData
@@ -1274,8 +1286,35 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
         face_obj.reference_image.save(
             f'face_{user_id}.jpg',
             ContentFile(img_bytes),
-            save=True,
+            save=False,   # don't hit DB yet — we compute embedding first
         )
+
+        # ── Fix 3: Pre-compute and store the Facenet512 embedding ─────────────
+        # This means punch time = one cosine distance calculation (~1ms)
+        # instead of running DeepFace.verify() which reloads the model each time.
+        emb_tmp = self._write_temp(img_bytes, suffix='.jpg')
+        try:
+            representations = DeepFace.represent(
+                img_path=emb_tmp,
+                model_name='Facenet512',
+                detector_backend='retinaface',
+                enforce_detection=True,
+                align=True,
+            )
+            embedding = representations[0]['embedding']  # list of 512 floats
+            face_obj.face_embedding = json.dumps(embedding)
+        except Exception:
+            # Embedding computation failed — still save the image so the
+            # record isn't lost.  Punch will fall back to DeepFace.verify().
+            face_obj.face_embedding = None
+        finally:
+            try:
+                if os.path.exists(emb_tmp):
+                    os.remove(emb_tmp)
+            except Exception:
+                pass
+
+        face_obj.save()
 
         return Response({'message': 'Face registered successfully!', 'user_id': int(user_id), 'face_registered': True})
 
@@ -1355,63 +1394,91 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
 
         matched_user  = None
         best_distance = 1.0   # lower = better match
+        threshold     = self._FACE_MODELS[0]['threshold']  # 0.30
 
+        # ── Fix 3: Compute live embedding once, then compare against all stored
+        # embeddings in DB — pure numpy vector math, no model reloads per user.
         try:
-            for face_obj in all_faces:
-                # Read reference image bytes
-                try:
-                    with face_obj.reference_image.open('rb') as f:
-                        ref_bytes = f.read()
-                except Exception:
-                    continue   # skip corrupt entries silently
-
-                ref_path = self._write_temp(ref_bytes, suffix='.jpg')
-                try:
-                    # Single model (Facenet512) — see _FACE_MODELS
-                    cfg       = self._FACE_MODELS[0]
-                    result    = DeepFace.verify(
-                        img1_path=inc_path,
-                        img2_path=ref_path,
-                        model_name=cfg['model'],
-                        distance_metric=cfg['metric'],
-                        enforce_detection=True,
-                        align=True,
-                    )
-                    distance  = result.get('distance', 1.0)
-                    threshold = cfg['threshold']
-
-                    if result.get('verified', False) and distance <= threshold:
-                        if distance < best_distance:
-                            best_distance = distance
-                            matched_user  = face_obj.user
-                except Exception as e:
-                    err_str = str(e)
-                    if 'Face could not be detected' in err_str or 'cannot be detected' in err_str.lower():
-                        # Incoming image quality is bad — abort immediately
-                        return Response(
-                            {
-                                'error': (
-                                    'Face not clearly detected. '
-                                    'Please ensure good lighting, face the camera directly, '
-                                    'and remove obstructions.'
-                                )
-                            },
-                            status=status.HTTP_403_FORBIDDEN,
-                        )
-                    # Any other per-candidate error: skip this candidate
-                    continue
-                finally:
-                    try:
-                        if os.path.exists(ref_path):
-                            os.remove(ref_path)
-                    except Exception:
-                        pass
+            live_representations = DeepFace.represent(
+                img_path=inc_path,
+                model_name='Facenet512',
+                detector_backend='opencv',   # fastest detector for live frames
+                enforce_detection=True,
+                align=True,
+            )
+            live_embedding = np.array(live_representations[0]['embedding'])
+        except Exception as e:
+            err_str = str(e)
+            if 'Face could not be detected' in err_str or 'cannot be detected' in err_str.lower():
+                return Response(
+                    {'error': 'Face not clearly detected. Please ensure good lighting, face the camera directly, and remove obstructions.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            return Response({'error': f'Face processing error: {err_str}'}, status=status.HTTP_400_BAD_REQUEST)
         finally:
             try:
                 if os.path.exists(inc_path):
                     os.remove(inc_path)
             except Exception:
                 pass
+
+        # ── Compare live embedding against each registered employee ───────────
+        for face_obj in all_faces:
+            if face_obj.face_embedding:
+                # Fast path — stored embedding available (~1ms per candidate)
+                try:
+                    stored_embedding = np.array(json.loads(face_obj.face_embedding))
+                    dot      = np.dot(live_embedding, stored_embedding)
+                    norm     = np.linalg.norm(live_embedding) * np.linalg.norm(stored_embedding)
+                    distance = 1.0 - (dot / norm) if norm > 0 else 1.0
+
+                    if distance <= threshold and distance < best_distance:
+                        best_distance = distance
+                        matched_user  = face_obj.user
+                except Exception:
+                    continue  # skip corrupt embedding silently
+            else:
+                # Slow fallback — no embedding yet (pre-update employee)
+                try:
+                    with face_obj.reference_image.open('rb') as f:
+                        ref_bytes = f.read()
+                except Exception:
+                    continue
+
+                ref_path = self._write_temp(ref_bytes, suffix='.jpg')
+                inc_path2 = self._write_temp(inc_bytes, suffix='.jpg')
+                try:
+                    ref_representations = DeepFace.represent(
+                        img_path=ref_path,
+                        model_name='Facenet512',
+                        detector_backend='retinaface',
+                        enforce_detection=True,
+                        align=True,
+                    )
+                    stored_embedding = np.array(ref_representations[0]['embedding'])
+                    dot      = np.dot(live_embedding, stored_embedding)
+                    norm     = np.linalg.norm(live_embedding) * np.linalg.norm(stored_embedding)
+                    distance = 1.0 - (dot / norm) if norm > 0 else 1.0
+
+                    if distance <= threshold and distance < best_distance:
+                        best_distance = distance
+                        matched_user  = face_obj.user
+
+                    # Opportunistically save embedding for next time
+                    try:
+                        face_obj.face_embedding = json.dumps(ref_representations[0]['embedding'])
+                        face_obj.save(update_fields=['face_embedding', 'updated_at'])
+                    except Exception:
+                        pass
+                except Exception:
+                    continue
+                finally:
+                    for p in (ref_path, inc_path2):
+                        try:
+                            if os.path.exists(p):
+                                os.remove(p)
+                        except Exception:
+                            pass
 
         # ── 5. No match found ─────────────────────────────────────────────────
         if matched_user is None:
@@ -1543,27 +1610,22 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
 
     def _verify_face(self, user, incoming_image_data):
         """
-        Two-model cross-check with strict cosine-distance thresholds.
+        Fast face verification using pre-computed Facenet512 embeddings.
 
-        A match is accepted ONLY if BOTH VGG-Face AND Facenet512 independently
-        confirm the same identity AND each model's distance is below its
-        configured threshold.  This eliminates the false-positive case where
-        two visually similar people pass a single-model check.
+        Flow:
+          1. Load the stored embedding from DB (computed at registration time).
+          2. Run DeepFace.represent() on the incoming image — just ONE forward
+             pass through the already-warm model (~300ms vs 20s cold load).
+          3. Compute cosine distance between the two 512-dim vectors (~1ms).
+
+        Falls back to DeepFace.verify() (slower) if no embedding is stored yet
+        (e.g. employees registered before this update).
         """
-        # ── 1. Load stored reference image ───────────────────────────────────
+        # ── 1. Load face record ───────────────────────────────────────────────
         try:
             face_data = EmployeeFaceData.objects.get(user=user)
         except EmployeeFaceData.DoesNotExist:
             return False, 'Face not registered. Please contact Admin.'
-
-        if not face_data.reference_image:
-            return False, 'Face data is invalid or missing.'
-
-        try:
-            with face_data.reference_image.open('rb') as f:
-                ref_bytes = f.read()
-        except Exception as e:
-            return False, f'Failed to load reference face: {e}'
 
         # ── 2. Decode incoming image ──────────────────────────────────────────
         try:
@@ -1574,51 +1636,97 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
         if not inc_bytes:
             return False, 'Empty image received.'
 
-        # ── 3. Write temp files (closed before DeepFace reads them) ──────────
-        ref_path = self._write_temp(ref_bytes, suffix='.jpg')
-        inc_path = self._write_temp(inc_bytes, suffix='.jpg')
+        threshold = self._FACE_MODELS[0]['threshold']  # 0.30
 
-        results = []
-        error_messages = []
+        # ── 3a. Fast path — embedding already stored in DB ────────────────────
+        if face_data.face_embedding:
+            inc_path = self._write_temp(inc_bytes, suffix='.jpg')
+            try:
+                representations = DeepFace.represent(
+                    img_path=inc_path,
+                    model_name='Facenet512',
+                    detector_backend='opencv',   # fastest detector for live frames
+                    enforce_detection=True,
+                    align=True,
+                )
+                live_embedding = np.array(representations[0]['embedding'])
+                stored_embedding = np.array(json.loads(face_data.face_embedding))
+
+                # Cosine distance = 1 - cosine_similarity
+                dot   = np.dot(live_embedding, stored_embedding)
+                norm  = np.linalg.norm(live_embedding) * np.linalg.norm(stored_embedding)
+                distance = 1.0 - (dot / norm) if norm > 0 else 1.0
+
+                if distance <= threshold:
+                    return True, 'Verified'
+                return False, f'Face does not match. (Facenet512={distance:.3f}/FAIL, threshold={threshold})'
+
+            except Exception as e:
+                err_str = str(e)
+                if 'Face could not be detected' in err_str or 'cannot be detected' in err_str.lower():
+                    return False, (
+                        'Face not clearly detected. Please ensure good lighting, '
+                        'face the camera directly, and remove obstructions.'
+                    )
+                # Unexpected error — fall through to slow path below
+            finally:
+                try:
+                    if os.path.exists(inc_path):
+                        os.remove(inc_path)
+                except Exception:
+                    pass
+
+        # ── 3b. Slow fallback — no embedding stored yet (pre-update employees) ─
+        # Also recomputes and saves the embedding so next time is fast.
+        if not face_data.reference_image:
+            return False, 'Face data is invalid or missing.'
 
         try:
-            for cfg in self._FACE_MODELS:
-                model_name = cfg['model']
-                metric     = cfg['metric']
-                threshold  = cfg['threshold']
+            with face_data.reference_image.open('rb') as f:
+                ref_bytes = f.read()
+        except Exception as e:
+            return False, f'Failed to load reference face: {e}'
+
+        ref_path = self._write_temp(ref_bytes, suffix='.jpg')
+        inc_path = self._write_temp(inc_bytes, suffix='.jpg')
+        try:
+            result = DeepFace.verify(
+                img1_path=inc_path,
+                img2_path=ref_path,
+                model_name='Facenet512',
+                distance_metric='cosine',
+                enforce_detection=True,
+                align=True,
+            )
+            distance = result.get('distance', 1.0)
+            passed   = result.get('verified', False) and (distance <= threshold)
+
+            if passed:
+                # ── Opportunistically save embedding so next punch is fast ────
                 try:
-                    result = DeepFace.verify(
-                        img1_path=inc_path,
-                        img2_path=ref_path,
-                        model_name=model_name,
-                        distance_metric=metric,
-                        # enforce_detection=True: reject blurry/partial/no-face images.
-                        # This is intentionally strict — if a face cannot be cleanly
-                        # detected we must not allow access.
+                    representations = DeepFace.represent(
+                        img_path=ref_path,
+                        model_name='Facenet512',
+                        detector_backend='retinaface',
                         enforce_detection=True,
-                        # align=True improves accuracy for off-angle faces.
                         align=True,
                     )
-                    distance = result.get('distance', 1.0)
-                    # Apply our own tighter threshold on top of DeepFace's decision.
-                    passed = result.get('verified', False) and (distance <= threshold)
-                    results.append({
-                        'model': model_name,
-                        'distance': round(distance, 4),
-                        'threshold': threshold,
-                        'passed': passed,
-                    })
-                except Exception as e:
-                    err_str = str(e)
-                    # "Face could not be detected" means a real quality failure —
-                    # treat it as a hard rejection rather than silently skipping.
-                    if 'Face could not be detected' in err_str or 'cannot be detected' in err_str.lower():
-                        return False, (
-                            'Face not clearly detected. Please ensure good lighting, '
-                            'face the camera directly, and remove obstructions.'
-                        )
-                    error_messages.append(f'{model_name}: {err_str}')
+                    face_data.face_embedding = json.dumps(representations[0]['embedding'])
+                    face_data.save(update_fields=['face_embedding', 'updated_at'])
+                except Exception:
+                    pass   # Non-fatal — will retry on next successful punch
+                return True, 'Verified'
 
+            return False, f'Face does not match. (Facenet512={distance:.3f}/FAIL)'
+
+        except Exception as e:
+            err_str = str(e)
+            if 'Face could not be detected' in err_str or 'cannot be detected' in err_str.lower():
+                return False, (
+                    'Face not clearly detected. Please ensure good lighting, '
+                    'face the camera directly, and remove obstructions.'
+                )
+            return False, f'Face verification error: {err_str}'
         finally:
             for p in (ref_path, inc_path):
                 try:
@@ -1626,25 +1734,6 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
                         os.remove(p)
                 except Exception:
                     pass
-
-        if error_messages and not results:
-            return False, f'Face verification error: {"; ".join(error_messages)}'
-
-        # ── 4. Require ALL models to pass (AND logic) ─────────────────────────
-        # If any model is unavailable (error), we fail safe.
-        if len(results) < len(self._FACE_MODELS):
-            return False, 'One or more face models could not run. Please try again.'
-
-        all_passed = all(r['passed'] for r in results)
-        if all_passed:
-            return True, 'Verified'
-
-        # Provide a helpful distance summary in the rejection message (useful for debugging).
-        summary = ', '.join(
-            f"{r['model']}={r['distance']:.3f}/{'OK' if r['passed'] else 'FAIL'}"
-            for r in results
-        )
-        return False, f'Face does not match. ({summary})'
 
     @action(detail=False, methods=['post'], url_path='check-in')
     def check_in(self, request):

@@ -294,6 +294,16 @@ class EmployeeFaceData(models.Model):
         null=True, blank=True,
     )
     reference_image = models.ImageField(upload_to='face_data/')
+
+    # Pre-computed Facenet512 embedding stored as a JSON array of 512 floats.
+    # Populated automatically when a face is registered via register-face.
+    # At punch time we do a single cosine-distance calculation instead of
+    # running DeepFace.verify() (which reloads the model on every request).
+    face_embedding = models.TextField(
+        null=True, blank=True,
+        help_text="JSON-serialised Facenet512 embedding vector (512 floats).",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
