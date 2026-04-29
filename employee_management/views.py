@@ -554,3 +554,62 @@ class EmployeeAssetDetailView(APIView):
 
         asset.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+# ---------------------------------------------------------------------------
+# Upcoming Increments  (Dashboard widget)
+# GET /employee/upcoming-increments/?days=30
+# Returns employees whose next_increment_date falls within the next N days.
+# ---------------------------------------------------------------------------
+from datetime import date, timedelta
+
+
+class UpcomingIncrementsView(APIView):
+    """
+    Return employees with a next_increment_date within the next `days` days
+    (default 30).  Ordered by next_increment_date ascending.
+
+    Response shape per item:
+      {
+        id, employee_id, first_name, last_name,
+        department_name, position, salary, salary_currency,
+        last_increment_date, next_increment_date,
+        days_until_increment   (0 = today, negative should not appear)
+      }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        try:
+            days = int(request.query_params.get('days', 30))
+        except (ValueError, TypeError):
+            days = 30
+
+        today    = date.today()
+        deadline = today + timedelta(days=days)
+
+        qs = (
+            _employee_qs(request.user)
+            .exclude(next_increment_date__isnull=True)
+            .filter(next_increment_date__gte=today, next_increment_date__lte=deadline)
+            .order_by('next_increment_date')
+        )
+
+        result = []
+        for emp in qs:
+            days_until = (emp.next_increment_date - today).days
+            result.append({
+                'id':                   emp.id,
+                'employee_id':          emp.employee_id,
+                'first_name':           emp.first_name,
+                'last_name':            emp.last_name,
+                'department_name':      emp.department.name if emp.department else None,
+                'position':             emp.position,
+                'salary':               str(emp.salary),
+                'salary_currency':      emp.salary_currency,
+                'last_increment_date':  str(emp.last_increment_date) if emp.last_increment_date else None,
+                'increment_cycle_months': emp.increment_cycle_months,
+                'next_increment_date':  str(emp.next_increment_date),
+                'days_until_increment': days_until,
+            })
+
+        return Response(result)

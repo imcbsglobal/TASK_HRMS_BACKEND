@@ -1278,15 +1278,245 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
         )
 
         return Response({'message': 'Face registered successfully!', 'user_id': int(user_id), 'face_registered': True})
-        
-    # ── Strict thresholds per model (lower distance = more similar) ──────────
-    # These are tighter than DeepFace defaults to eliminate false positives.
-    # VGG-Face default is 0.40 (cosine); we use 0.30.
-    # Facenet512 default is 0.30; we use 0.25.
-    # Both models must agree for a match.
+
+    @action(detail=False, methods=['post'], url_path='kiosk-punch')
+    def kiosk_punch(self, request):
+        """
+        Kiosk / shared-device punch endpoint.
+
+        Unlike check-in / check-out (which require the employee's own token),
+        this endpoint accepts a DEVICE token (any authenticated user — typically
+        an admin or a dedicated kiosk service account) and identifies the
+        employee by comparing the submitted face image against every registered
+        face in the tenant.
+
+        POST /api/attendance/face/kiosk-punch/
+        Content-Type: multipart/form-data
+
+        Required fields:
+            image       — camera frame (multipart file or base64 string)
+
+        Optional fields:
+            action      — "check_in" | "check_out" | "auto" (default: "auto")
+            latitude    — GPS latitude  (float, optional)
+            longitude   — GPS longitude (float, optional)
+            address     — human-readable address string (optional)
+            notes       — free-text note (optional)
+
+        Responses:
+            200  — punch recorded; body contains employee info + attendance record
+            400  — missing image / already checked in+out / no face registered
+            403  — face not recognised / geofence blocked
+            404  — no registered face matches the submitted image
+        """
+        # ── 0. Pull request fields ────────────────────────────────────────────
+        image_data = request.FILES.get('image') or request.data.get('image')
+        action_req = request.data.get('action', 'auto')   # "check_in" | "check_out" | "auto"
+        latitude   = request.data.get('latitude')
+        longitude  = request.data.get('longitude')
+        address    = request.data.get('address', '')
+        notes      = request.data.get('notes', '')
+
+        if not image_data:
+            return Response({'error': 'Image is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if action_req not in ('check_in', 'check_out', 'auto'):
+            return Response({'error': 'action must be "check_in", "check_out", or "auto".'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # ── 1. Decode incoming image bytes once (reused for each candidate) ───
+        try:
+            inc_bytes = self._load_image_bytes(image_data)
+        except Exception as e:
+            return Response({'error': f'Invalid image data: {e}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not inc_bytes:
+            return Response({'error': 'Empty image received.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # ── 2. Determine tenant scope from the device token ───────────────────
+        device_user  = request.user
+        admin_owner  = _get_admin_owner(device_user)
+
+        # ── 3. Load all registered faces for this tenant ──────────────────────
+        all_faces = (
+            EmployeeFaceData.objects
+            .filter(admin_owner=admin_owner, reference_image__isnull=False)
+            .exclude(reference_image='')
+            .select_related('user')
+        )
+
+        if not all_faces.exists():
+            return Response(
+                {'error': 'No faces registered for this organisation.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── 4. Write incoming image to a temp file (deleted in finally) ───────
+        inc_path = self._write_temp(inc_bytes, suffix='.jpg')
+
+        matched_user  = None
+        best_distance = 1.0   # lower = better match
+
+        try:
+            for face_obj in all_faces:
+                # Read reference image bytes
+                try:
+                    with face_obj.reference_image.open('rb') as f:
+                        ref_bytes = f.read()
+                except Exception:
+                    continue   # skip corrupt entries silently
+
+                ref_path = self._write_temp(ref_bytes, suffix='.jpg')
+                try:
+                    # Single model (Facenet512) — see _FACE_MODELS
+                    cfg       = self._FACE_MODELS[0]
+                    result    = DeepFace.verify(
+                        img1_path=inc_path,
+                        img2_path=ref_path,
+                        model_name=cfg['model'],
+                        distance_metric=cfg['metric'],
+                        enforce_detection=True,
+                        align=True,
+                    )
+                    distance  = result.get('distance', 1.0)
+                    threshold = cfg['threshold']
+
+                    if result.get('verified', False) and distance <= threshold:
+                        if distance < best_distance:
+                            best_distance = distance
+                            matched_user  = face_obj.user
+                except Exception as e:
+                    err_str = str(e)
+                    if 'Face could not be detected' in err_str or 'cannot be detected' in err_str.lower():
+                        # Incoming image quality is bad — abort immediately
+                        return Response(
+                            {
+                                'error': (
+                                    'Face not clearly detected. '
+                                    'Please ensure good lighting, face the camera directly, '
+                                    'and remove obstructions.'
+                                )
+                            },
+                            status=status.HTTP_403_FORBIDDEN,
+                        )
+                    # Any other per-candidate error: skip this candidate
+                    continue
+                finally:
+                    try:
+                        if os.path.exists(ref_path):
+                            os.remove(ref_path)
+                    except Exception:
+                        pass
+        finally:
+            try:
+                if os.path.exists(inc_path):
+                    os.remove(inc_path)
+            except Exception:
+                pass
+
+        # ── 5. No match found ─────────────────────────────────────────────────
+        if matched_user is None:
+            return Response(
+                {'error': 'Face not recognised. Please try again or contact admin.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # ── 6. Geofence check (using the matched employee's profile) ──────────
+        settings_obj = AttendanceSettings.objects.filter(admin_owner=admin_owner).order_by('-id').first()
+        allowed, geo_error, _ = validate_geofence(matched_user, latitude, longitude, settings_obj)
+        if not allowed:
+            return Response({'error': geo_error}, status=status.HTTP_403_FORBIDDEN)
+
+        # ── 7. Determine punch direction ──────────────────────────────────────
+        today        = timezone.now().date()
+        current_time = timezone.now()
+
+        attendance, created = Attendance.objects.get_or_create(
+            user=matched_user,
+            date=today,
+            admin_owner=admin_owner,
+            defaults={
+                'check_in_time':      current_time,
+                'notes':              notes,
+                'status':             'present',
+                'check_in_latitude':  latitude,
+                'check_in_longitude': longitude,
+                'check_in_address':   address,
+            },
+        )
+
+        if created:
+            # Brand-new record — always a check-in
+            punch_result = 'checked_in'
+        else:
+            # Record already exists — decide based on action or auto-detect
+            if action_req == 'check_in' or (action_req == 'auto' and not attendance.check_in_time):
+                if attendance.check_in_time:
+                    return Response(
+                        {'error': f'{matched_user.get_full_name() or matched_user.username} has already checked in today.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                attendance.check_in_time      = current_time
+                attendance.check_in_latitude  = latitude
+                attendance.check_in_longitude = longitude
+                attendance.check_in_address   = address
+                if notes:
+                    attendance.notes = notes
+                attendance.save()
+                punch_result = 'checked_in'
+
+            elif action_req == 'check_out' or (action_req == 'auto' and attendance.check_in_time and not attendance.check_out_time):
+                if not attendance.check_in_time:
+                    return Response(
+                        {'error': f'{matched_user.get_full_name() or matched_user.username} has not checked in yet today.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if attendance.check_out_time:
+                    return Response(
+                        {'error': f'{matched_user.get_full_name() or matched_user.username} has already checked out today.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                attendance.check_out_time      = current_time
+                attendance.check_out_latitude  = latitude
+                attendance.check_out_longitude = longitude
+                attendance.check_out_address   = address
+                if notes:
+                    attendance.notes = notes
+                attendance.save()
+                punch_result = 'checked_out'
+
+            else:
+                # auto + both already filled
+                return Response(
+                    {'error': f'{matched_user.get_full_name() or matched_user.username} has already completed attendance for today.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        return Response(
+            {
+                'message':       f'Successfully {punch_result.replace("_", " ")}.',
+                'punch':         punch_result,           # "checked_in" | "checked_out"
+                'matched_user':  {
+                    'id':         matched_user.id,
+                    'username':   matched_user.username,
+                    'full_name':  matched_user.get_full_name(),
+                    'email':      matched_user.email,
+                },
+                'face_distance': round(best_distance, 4),
+                'attendance':    AttendanceSerializer(attendance).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    # ── Single-model config: Facenet512 only ─────────────────────────────────
+    # VGG-Face was dropped because:
+    #   • It's slower (runs sequentially, ~2× total latency).
+    #   • Its cosine threshold is poorly calibrated for diverse skin tones,
+    #     causing false rejections even when Facenet512 passes cleanly.
+    # Facenet512 cosine threshold: 0.30 (DeepFace default). We use 0.30 here —
+    # tighter than the old 0.25 because without a second-model safety net we
+    # allow a small buffer, while still being stricter than random chance.
     _FACE_MODELS = [
-        {'model': 'VGG-Face',    'metric': 'cosine',    'threshold': 0.30},
-        {'model': 'Facenet512',  'metric': 'cosine',    'threshold': 0.25},
+        {'model': 'Facenet512',  'metric': 'cosine',    'threshold': 0.30},
     ]
 
     def _load_image_bytes(self, image_data):

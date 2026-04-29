@@ -99,6 +99,52 @@ class Employee(models.Model):
     salary          = models.DecimalField(max_digits=10, decimal_places=2)
     salary_currency = models.CharField(max_length=10, default='USD', blank=True)
 
+    # ── Increment Details ─────────────────────────────────────────────────────
+    INCREMENT_CYCLE_CHOICES = [
+        (1,  'Every Month'),
+        (2,  'Every 2 Months'),
+        (3,  'Every Quarter (3 Months)'),
+        (4,  'Every 4 Months'),
+        (6,  'Every 6 Months (Half-Yearly)'),
+        (12, 'Every Year (Annual)'),
+        (18, 'Every 18 Months'),
+        (24, 'Every 2 Years'),
+        (0,  'Custom / Manual'),
+    ]
+    last_increment_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text='Date when the last salary increment was applied',
+    )
+    increment_cycle_months = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        choices=INCREMENT_CYCLE_CHOICES,
+        help_text='How often this employee receives a salary increment (in months). '
+                  '0 = manual/custom, null = not configured.',
+    )
+    next_increment_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text='Scheduled date for the next salary increment. '
+                  'Auto-calculated from last_increment_date + increment_cycle_months when saved.',
+    )
+
+    def _compute_next_increment_date(self):
+        """
+        Auto-compute next_increment_date from last_increment_date + increment_cycle_months.
+        Only runs when cycle > 0 and last_increment_date is set.
+        Does NOT overwrite a manually supplied next_increment_date when cycle == 0.
+        """
+        from dateutil.relativedelta import relativedelta
+        if (
+            self.last_increment_date
+            and self.increment_cycle_months
+            and self.increment_cycle_months > 0
+        ):
+            return self.last_increment_date + relativedelta(months=self.increment_cycle_months)
+        return self.next_increment_date  # keep whatever was set manually
+
     # ── Bank Details ──────────────────────────────────────────────────────────
     bank_name           = models.CharField(max_length=100, blank=True)
     account_number      = models.CharField(max_length=50, blank=True)
@@ -196,6 +242,8 @@ class Employee(models.Model):
                 self.employee_id = f'EMP{last_number + 1:04d}'
             else:
                 self.employee_id = 'EMP0001'
+        # Auto-compute next_increment_date when a cycle is configured
+        self.next_increment_date = self._compute_next_increment_date()
         super().save(*args, **kwargs)
 
     def __str__(self):

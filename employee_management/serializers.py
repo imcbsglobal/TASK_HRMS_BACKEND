@@ -76,6 +76,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
             'emergency_contact_relationship',
             # Salary Details
             'salary', 'salary_currency',
+            'last_increment_date', 'increment_cycle_months', 'next_increment_date',
             # Bank Details
             'bank_name', 'account_number', 'account_holder_name',
             'ifsc_code', 'branch_name', 'account_type',
