@@ -520,4 +520,4 @@ class EmployeeFaceDataSerializer(serializers.ModelSerializer):
         read_only_fields = ['created_at', 'updated_at']
         extra_kwargs = {
             'admin_owner': {'write_only': True, 'required': False},
-        }
+        }
