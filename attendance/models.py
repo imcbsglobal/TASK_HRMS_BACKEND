@@ -89,8 +89,10 @@ class Attendance(models.Model):
             return
         if self.check_in_time:
             if self.check_out_time:
+                # Both check-in and check-out recorded → full day present
                 self.status = 'present'
             else:
+                # Checked in but not yet checked out → half day (in progress)
                 self.status = 'half_day'
         else:
             self.status = 'absent'

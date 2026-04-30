@@ -9,6 +9,22 @@ from datetime import datetime, timedelta
 from calendar import monthrange
 import pytz
 
+# ── JWT helpers for auto-login after face recognition ────────────────────────
+try:
+    from rest_framework_simplejwt.tokens import RefreshToken as _RefreshToken
+    def _generate_tokens_for_user(user):
+        """Return {'access': str, 'refresh': str} for the given user."""
+        refresh = _RefreshToken.for_user(user)
+        return {
+            'refresh': str(refresh),
+            'access':  str(refresh.access_token),
+        }
+except ImportError:
+    # Fallback: return empty tokens if simplejwt is not installed
+    def _generate_tokens_for_user(user):
+        return {'access': '', 'refresh': ''}
+# ─────────────────────────────────────────────────────────────────────────────
+
 import tempfile
 import os
 import base64
@@ -65,6 +81,26 @@ def _get_admin_owner(user):
     if _is_admin(user):
         return user
     return getattr(user, 'admin_owner', None)
+
+
+def _get_full_name(user):
+    """
+    Safely get a user's full name.
+    Works with both Django's default User (get_full_name()) and custom User
+    models that expose a direct `full_name` field.
+    """
+    if callable(getattr(user, 'get_full_name', None)):
+        name = user.get_full_name()
+        if name and name.strip():
+            return name.strip()
+    # Fallback: direct full_name field (custom User models)
+    name = getattr(user, 'full_name', None)
+    if name and str(name).strip():
+        return str(name).strip()
+    # Last resort: first_name + last_name
+    parts = [getattr(user, 'first_name', ''), getattr(user, 'last_name', '')]
+    joined = ' '.join(p for p in parts if p)
+    return joined or user.username
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -266,7 +302,6 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             defaults={
                 'check_in_time': current_time,
                 'notes': serializer.validated_data.get('notes', ''),
-                'status': 'present',
                 'check_in_latitude': latitude,
                 'check_in_longitude': longitude,
                 'check_in_address': address,
@@ -1353,8 +1388,8 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
         action_req = request.data.get('action', 'auto')   # "check_in" | "check_out" | "auto"
         latitude   = request.data.get('latitude')
         longitude  = request.data.get('longitude')
-        address    = request.data.get('address', '')
-        notes      = request.data.get('notes', '')
+        address    = request.data.get('address', '') or ''
+        notes      = request.data.get('notes', '') or ''
 
         if not image_data:
             return Response({'error': 'Image is required.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1497,66 +1532,123 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
         today        = timezone.now().date()
         current_time = timezone.now()
 
-        attendance, created = Attendance.objects.get_or_create(
-            user=matched_user,
-            date=today,
-            admin_owner=admin_owner,
-            defaults={
-                'check_in_time':      current_time,
-                'notes':              notes,
-                'status':             'present',
-                'check_in_latitude':  latitude,
-                'check_in_longitude': longitude,
-                'check_in_address':   address,
-            },
-        )
+        def _safe_decimal(val):
+            try:
+                return float(val) if val is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        lat_val  = _safe_decimal(latitude)
+        lon_val  = _safe_decimal(longitude)
+
+        try:
+            attendance = Attendance.objects.get(
+                user=matched_user,
+                date=today,
+                admin_owner=admin_owner,
+            )
+            created = False
+        except Attendance.DoesNotExist:
+            try:
+                attendance = Attendance.objects.create(
+                    user=matched_user,
+                    date=today,
+                    admin_owner=admin_owner,
+                    check_in_time=current_time,
+                    notes=notes or '',
+                    check_in_latitude=lat_val,
+                    check_in_longitude=lon_val,
+                    check_in_address=address or '',
+                )
+                # determine_status() sets status='half_day' (checked-in, no checkout) — correct.
+                created = True
+            except Exception:
+                attendance = Attendance.objects.get(
+                    user=matched_user,
+                    date=today,
+                    admin_owner=admin_owner,
+                )
+                created = False
 
         if created:
-            # Brand-new record — always a check-in
+            # Brand-new record — always a check-in → status is already 'half_day'
             punch_result = 'checked_in'
         else:
             # Record already exists — decide based on action or auto-detect
             if action_req == 'check_in' or (action_req == 'auto' and not attendance.check_in_time):
                 if attendance.check_in_time:
                     return Response(
-                        {'error': f'{matched_user.get_full_name() or matched_user.username} has already checked in today.'},
+                        {'error': f'{_get_full_name(matched_user) or matched_user.username} has already checked in today.'},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 attendance.check_in_time      = current_time
-                attendance.check_in_latitude  = latitude
-                attendance.check_in_longitude = longitude
-                attendance.check_in_address   = address
+                attendance.check_in_latitude  = lat_val
+                attendance.check_in_longitude = lon_val
+                attendance.check_in_address   = address or ''
                 if notes:
                     attendance.notes = notes
-                attendance.save()
+                # determine_status() will set 'half_day' (no checkout yet)
+                attendance.save(update_fields=[
+                    'check_in_time', 'check_in_latitude', 'check_in_longitude',
+                    'check_in_address', 'notes', 'status', 'updated_at',
+                ])
                 punch_result = 'checked_in'
 
             elif action_req == 'check_out' or (action_req == 'auto' and attendance.check_in_time and not attendance.check_out_time):
                 if not attendance.check_in_time:
                     return Response(
-                        {'error': f'{matched_user.get_full_name() or matched_user.username} has not checked in yet today.'},
+                        {'error': f'{_get_full_name(matched_user) or matched_user.username} has not checked in yet today.'},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 if attendance.check_out_time:
                     return Response(
-                        {'error': f'{matched_user.get_full_name() or matched_user.username} has already checked out today.'},
+                        {'error': f'{_get_full_name(matched_user) or matched_user.username} has already checked out today.'},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 attendance.check_out_time      = current_time
-                attendance.check_out_latitude  = latitude
-                attendance.check_out_longitude = longitude
-                attendance.check_out_address   = address
+                attendance.check_out_latitude  = lat_val
+                attendance.check_out_longitude = lon_val
+                attendance.check_out_address   = address or ''
                 if notes:
                     attendance.notes = notes
-                attendance.save()
+                attendance.calculate_hours()
+                # determine_status() will set 'present' (both times exist)
+                attendance.save(update_fields=[
+                    'check_out_time', 'check_out_latitude', 'check_out_longitude',
+                    'check_out_address', 'notes', 'status', 'total_hours', 'updated_at',
+                ])
                 punch_result = 'checked_out'
 
             else:
                 # auto + both already filled
                 return Response(
-                    {'error': f'{matched_user.get_full_name() or matched_user.username} has already completed attendance for today.'},
+                    {'error': f'{_get_full_name(matched_user) or matched_user.username} has already completed attendance for today.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+
+        # Serialize safely so a serializer crash never kills a successful punch
+        try:
+            att_fresh = (
+                Attendance.objects
+                .select_related('user', 'verified_by', 'late_approved_by')
+                .get(pk=attendance.pk)
+            )
+            att_data = AttendanceSerializer(att_fresh, context={'request': request}).data
+        except Exception:
+            import pytz as _pytz
+            _ist = _pytz.timezone('Asia/Kolkata')
+            def _fmt(dt):
+                return dt.astimezone(_ist).strftime('%I:%M %p') if dt else None
+            att_data = {
+                'id': attendance.pk,
+                'date': str(attendance.date),
+                'status': attendance.status,
+                'total_hours': str(attendance.total_hours),
+                'check_in_time': attendance.check_in_time.isoformat() if attendance.check_in_time else None,
+                'check_in_time_formatted': _fmt(attendance.check_in_time),
+                'check_out_time': attendance.check_out_time.isoformat() if attendance.check_out_time else None,
+                'check_out_time_formatted': _fmt(attendance.check_out_time),
+            }
 
         return Response(
             {
@@ -1565,14 +1657,353 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
                 'matched_user':  {
                     'id':         matched_user.id,
                     'username':   matched_user.username,
-                    'full_name':  matched_user.get_full_name(),
+                    'full_name':  _get_full_name(matched_user),
                     'email':      matched_user.email,
                 },
                 'face_distance': round(best_distance, 4),
-                'attendance':    AttendanceSerializer(attendance).data,
+                'attendance':    att_data,
             },
             status=status.HTTP_200_OK,
         )
+
+    @action(detail=False, methods=['post'], url_path='auto-punch')
+    def auto_punch(self, request):
+        """
+        Face-Recognition Auto-Punch (no employee login required).
+
+        This endpoint is the single entry-point for a "login-free" attendance
+        terminal.  The device authenticates once with a shared device / admin
+        token.  Each employee simply walks up, scans their face, and this view:
+
+          1. Identifies which employee the face belongs to (tenant-scoped).
+          2. Decides whether to check-in or check-out (same logic as kiosk-punch).
+          3. Records the attendance record.
+          4. Generates a fresh JWT pair FOR THAT EMPLOYEE and returns it.
+             The frontend can store this token and call authenticated endpoints
+             (e.g. /attendance/today/, /attendance/history/) on that employee's
+             behalf — no password ever needed.
+
+        POST /api/attendance/face/auto-punch/
+        Auth : Bearer <device_or_admin_token>
+
+        Body (JSON or multipart):
+            image      — base64 data-URI OR multipart file (required)
+            action     — "check_in" | "check_out" | "auto"  (default: "auto")
+            latitude   — float, optional
+            longitude  — float, optional
+            address    — string, optional
+            notes      — string, optional
+
+        Response 200:
+            {
+              "punch":        "checked_in" | "checked_out",
+              "message":      "...",
+              "matched_user": { id, username, full_name, email },
+              "face_distance": 0.1234,
+              "attendance":   { ...AttendanceSerializer fields... },
+              "tokens": {
+                "access":  "<JWT access token for matched employee>",
+                "refresh": "<JWT refresh token for matched employee>"
+              }
+            }
+
+        Errors:
+            400 — image missing / already punched / no faces registered
+            403 — face not detected clearly / geofence violation
+            404 — no registered face matches the submitted image
+        """
+        # ── 0. Parse request fields ───────────────────────────────────────────
+        image_data = request.FILES.get('image') or request.data.get('image')
+        action_req = request.data.get('action', 'auto')
+        latitude   = request.data.get('latitude')
+        longitude  = request.data.get('longitude')
+        address    = request.data.get('address', '') or ''
+        notes      = request.data.get('notes', '') or ''
+
+        if not image_data:
+            return Response({'error': 'Image is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if action_req not in ('check_in', 'check_out', 'auto'):
+            return Response(
+                {'error': 'action must be "check_in", "check_out", or "auto".'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── 1. Decode incoming image bytes ────────────────────────────────────
+        try:
+            inc_bytes = self._load_image_bytes(image_data)
+        except Exception as e:
+            return Response({'error': f'Invalid image data: {e}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not inc_bytes:
+            return Response({'error': 'Empty image received.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # ── 2. Tenant scope from the device token ─────────────────────────────
+        device_user = request.user
+        admin_owner = _get_admin_owner(device_user)
+
+        # ── 3. Load all registered faces for this tenant ──────────────────────
+        all_faces = (
+            EmployeeFaceData.objects
+            .filter(admin_owner=admin_owner, reference_image__isnull=False)
+            .exclude(reference_image='')
+            .select_related('user')
+        )
+        if not all_faces.exists():
+            return Response(
+                {'error': 'No faces registered for this organisation.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── 4. Compute live face embedding once ───────────────────────────────
+        inc_path = self._write_temp(inc_bytes, suffix='.jpg')
+        matched_user  = None
+        best_distance = 1.0
+        threshold     = self._FACE_MODELS[0]['threshold']  # 0.30
+
+        try:
+            live_reps = DeepFace.represent(
+                img_path=inc_path,
+                model_name='Facenet512',
+                detector_backend='opencv',
+                enforce_detection=True,
+                align=True,
+            )
+            live_embedding = np.array(live_reps[0]['embedding'])
+        except Exception as e:
+            err_str = str(e)
+            if 'Face could not be detected' in err_str or 'cannot be detected' in err_str.lower():
+                return Response(
+                    {'error': 'Face not clearly detected. Ensure good lighting, face the camera directly, and remove obstructions.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            return Response({'error': f'Face processing error: {err_str}'}, status=status.HTTP_400_BAD_REQUEST)
+        finally:
+            try:
+                if os.path.exists(inc_path):
+                    os.remove(inc_path)
+            except Exception:
+                pass
+
+        # ── 5. Compare against every registered employee ──────────────────────
+        for face_obj in all_faces:
+            if face_obj.face_embedding:
+                try:
+                    stored_emb = np.array(json.loads(face_obj.face_embedding))
+                    dot      = np.dot(live_embedding, stored_emb)
+                    norm     = np.linalg.norm(live_embedding) * np.linalg.norm(stored_emb)
+                    distance = 1.0 - (dot / norm) if norm > 0 else 1.0
+                    if distance <= threshold and distance < best_distance:
+                        best_distance = distance
+                        matched_user  = face_obj.user
+                except Exception:
+                    continue
+            else:
+                # Slow fallback for employees without pre-computed embeddings
+                try:
+                    with face_obj.reference_image.open('rb') as f:
+                        ref_bytes = f.read()
+                except Exception:
+                    continue
+                ref_path  = self._write_temp(ref_bytes, suffix='.jpg')
+                inc_path2 = self._write_temp(inc_bytes, suffix='.jpg')
+                try:
+                    ref_reps = DeepFace.represent(
+                        img_path=ref_path,
+                        model_name='Facenet512',
+                        detector_backend='retinaface',
+                        enforce_detection=True,
+                        align=True,
+                    )
+                    stored_emb = np.array(ref_reps[0]['embedding'])
+                    dot      = np.dot(live_embedding, stored_emb)
+                    norm     = np.linalg.norm(live_embedding) * np.linalg.norm(stored_emb)
+                    distance = 1.0 - (dot / norm) if norm > 0 else 1.0
+                    if distance <= threshold and distance < best_distance:
+                        best_distance = distance
+                        matched_user  = face_obj.user
+                    # Cache embedding for next time
+                    try:
+                        face_obj.face_embedding = json.dumps(ref_reps[0]['embedding'])
+                        face_obj.save(update_fields=['face_embedding', 'updated_at'])
+                    except Exception:
+                        pass
+                except Exception:
+                    continue
+                finally:
+                    for p in (ref_path, inc_path2):
+                        try:
+                            if os.path.exists(p):
+                                os.remove(p)
+                        except Exception:
+                            pass
+
+        # ── 6. No match found ─────────────────────────────────────────────────
+        if matched_user is None:
+            return Response(
+                {'error': 'Face not recognised. Please try again or contact your admin.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # ── 7. Geofence check for the matched employee ────────────────────────
+        settings_obj = AttendanceSettings.objects.filter(admin_owner=admin_owner).order_by('-id').first()
+        allowed, geo_error, _ = validate_geofence(matched_user, latitude, longitude, settings_obj)
+        if not allowed:
+            return Response({'error': geo_error}, status=status.HTTP_403_FORBIDDEN)
+
+        # ── 8. Punch attendance ───────────────────────────────────────────────
+        today        = timezone.now().date()
+        current_time = timezone.now()
+
+        # Coerce lat/lon to float (request.data returns strings from JSON/form)
+        def _safe_decimal(val):
+            try:
+                return float(val) if val is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        lat_val  = _safe_decimal(latitude)
+        lon_val  = _safe_decimal(longitude)
+
+        # Use select_for_update-style: try to fetch first, create only if missing
+        # This avoids the IntegrityError race on unique_together(user, date)
+        try:
+            attendance = Attendance.objects.get(
+                user=matched_user,
+                date=today,
+                admin_owner=admin_owner,
+            )
+            created = False
+        except Attendance.DoesNotExist:
+            try:
+                attendance = Attendance.objects.create(
+                    user=matched_user,
+                    date=today,
+                    admin_owner=admin_owner,
+                    check_in_time=current_time,
+                    notes=notes or '',
+                    check_in_latitude=lat_val,
+                    check_in_longitude=lon_val,
+                    check_in_address=address or '',
+                )
+                # determine_status() sets status='half_day' (checked-in, no checkout) — correct.
+                created = True
+            except Exception:
+                # Race: another request created it between our GET and CREATE
+                attendance = Attendance.objects.get(
+                    user=matched_user,
+                    date=today,
+                    admin_owner=admin_owner,
+                )
+                created = False
+
+        if created:
+            punch_result = 'checked_in'
+        else:
+            if action_req == 'check_in' or (action_req == 'auto' and not attendance.check_in_time):
+                if attendance.check_in_time:
+                    return Response(
+                        {'error': f'{_get_full_name(matched_user) or matched_user.username} has already checked in today.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                attendance.check_in_time      = current_time
+                attendance.check_in_latitude  = lat_val
+                attendance.check_in_longitude = lon_val
+                attendance.check_in_address   = address or ''
+                if notes:
+                    attendance.notes = notes
+                attendance.save(update_fields=[
+                    'check_in_time', 'check_in_latitude', 'check_in_longitude',
+                    'check_in_address', 'notes', 'status', 'updated_at',
+                ])
+                punch_result = 'checked_in'
+
+            elif action_req == 'check_out' or (action_req == 'auto' and attendance.check_in_time and not attendance.check_out_time):
+                if not attendance.check_in_time:
+                    return Response(
+                        {'error': f'{_get_full_name(matched_user) or matched_user.username} has not checked in yet today.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if attendance.check_out_time:
+                    return Response(
+                        {'error': f'{_get_full_name(matched_user) or matched_user.username} has already checked out today.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                attendance.check_out_time      = current_time
+                attendance.check_out_latitude  = lat_val
+                attendance.check_out_longitude = lon_val
+                attendance.check_out_address   = address or ''
+                if notes:
+                    attendance.notes = notes
+                # Recalculate hours and set status to present now both times exist
+                attendance.calculate_hours()
+                attendance.status = 'present'
+                attendance.save(update_fields=[
+                    'check_out_time', 'check_out_latitude', 'check_out_longitude',
+                    'check_out_address', 'notes', 'status', 'total_hours', 'updated_at',
+                ])
+                punch_result = 'checked_out'
+
+            else:
+                return Response(
+                    {'error': f'{_get_full_name(matched_user) or matched_user.username} has already completed attendance for today.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        # ── 9. Generate JWT tokens (wrapped so a token error never kills the response) ──
+        try:
+            employee_tokens = _generate_tokens_for_user(matched_user)
+        except Exception:
+            employee_tokens = {'access': '', 'refresh': ''}
+
+        # ── 10. Serialize attendance safely (re-fetch with relations to avoid stale data) ──
+        try:
+            attendance_fresh = (
+                Attendance.objects
+                .select_related('user', 'verified_by', 'late_approved_by')
+                .get(pk=attendance.pk)
+            )
+            attendance_data = AttendanceSerializer(
+                attendance_fresh,
+                context={'request': request},
+            ).data
+        except Exception:
+            # Fallback: minimal dict so a serializer crash never causes a 500
+            try:
+                import pytz as _pytz
+                _ist = _pytz.timezone('Asia/Kolkata')
+                def _fmt(dt):
+                    return dt.astimezone(_ist).strftime('%I:%M %p') if dt else None
+            except Exception:
+                def _fmt(dt):
+                    return str(dt) if dt else None
+            attendance_data = {
+                'id':                       attendance.pk,
+                'date':                     str(attendance.date),
+                'status':                   attendance.status,
+                'total_hours':              str(attendance.total_hours),
+                'check_in_time':            attendance.check_in_time.isoformat() if attendance.check_in_time else None,
+                'check_in_time_formatted':  _fmt(attendance.check_in_time),
+                'check_out_time':           attendance.check_out_time.isoformat() if attendance.check_out_time else None,
+                'check_out_time_formatted': _fmt(attendance.check_out_time),
+            }
+
+        return Response(
+            {
+                'message':       f'Successfully {punch_result.replace("_", " ")}.',
+                'punch':         punch_result,
+                'matched_user':  {
+                    'id':        matched_user.id,
+                    'username':  matched_user.username,
+                    'full_name': _get_full_name(matched_user),
+                    'email':     matched_user.email,
+                },
+                'face_distance': round(best_distance, 4),
+                'attendance':    attendance_data,
+                'tokens':        employee_tokens,
+            },
+            status=status.HTTP_200_OK,
+        )
+
 
     # ── Single-model config: Facenet512 only ─────────────────────────────────
     # VGG-Face was dropped because:
@@ -1782,7 +2213,6 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
             defaults={
                 'check_in_time': current_time,
                 'notes': serializer.validated_data.get('notes', ''),
-                'status': 'present',
                 'check_in_latitude': serializer.validated_data.get('latitude'),
                 'check_in_longitude': serializer.validated_data.get('longitude'),
                 'check_in_address': serializer.validated_data.get('address', ''),

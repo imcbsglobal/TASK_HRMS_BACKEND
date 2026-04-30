@@ -57,6 +57,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'corsheaders',
     'rest_framework',
+    'rest_framework_simplejwt.token_blacklist',  # Required because BLACKLIST_AFTER_ROTATION=True
     'login',
     'HR', 
     'employee_management',
