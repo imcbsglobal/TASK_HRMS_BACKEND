@@ -31,8 +31,17 @@ import base64
 import json
 import requests
 import numpy as np
+import io
 from django.core.files.base import ContentFile
 from deepface import DeepFace
+
+# ── Pillow import (used for EXIF-rotation normalisation) ─────────────────────
+try:
+    from PIL import Image as _PilImage, ImageOps as _PilImageOps
+    _PIL_AVAILABLE = True
+except ImportError:
+    _PIL_AVAILABLE = False
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ── Fix 1: Pre-load Facenet512 model at server startup ────────────────────────
 # DeepFace loads the neural network from disk on the first call (~10-25s).
@@ -1437,7 +1446,7 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
             live_representations = DeepFace.represent(
                 img_path=inc_path,
                 model_name='Facenet512',
-                detector_backend='opencv',   # fastest detector for live frames
+                detector_backend='retinaface',  # matches registration detector; handles mobile selfies correctly
                 enforce_detection=True,
                 align=True,
             )
@@ -1765,7 +1774,7 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
             live_reps = DeepFace.represent(
                 img_path=inc_path,
                 model_name='Facenet512',
-                detector_backend='opencv',
+                detector_backend='retinaface',  # matches registration detector; handles mobile selfies correctly
                 enforce_detection=True,
                 align=True,
             )
@@ -2017,18 +2026,57 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
         {'model': 'Facenet512',  'metric': 'cosine',    'threshold': 0.30},
     ]
 
+    @staticmethod
+    def _normalize_image_orientation(raw_bytes: bytes) -> bytes:
+        """
+        Bake any EXIF orientation tag into the pixel data and return a clean
+        RGB JPEG.
+
+        Mobile phones (iOS + Android) write the image sensor output in landscape
+        but store a rotation flag in EXIF.  OpenCV (used by DeepFace as the fast
+        detector) ignores that flag, so it receives a rotated/flipped face and
+        fails to detect it.  RetinaFace handles it better but not perfectly.
+
+        By stripping EXIF and physically rotating the pixels here — before any
+        DeepFace call — we guarantee the image is always upright regardless of
+        which detector is used or how the photo was taken.
+
+        Falls back to returning the original bytes if Pillow is not installed or
+        if the image cannot be opened (non-fatal).
+        """
+        if not _PIL_AVAILABLE or not raw_bytes:
+            return raw_bytes
+        try:
+            img = _PilImage.open(io.BytesIO(raw_bytes))
+            # ImageOps.exif_transpose rotates the image so that the pixel data
+            # matches what you see on screen, then removes the EXIF orientation tag.
+            img = _PilImageOps.exif_transpose(img)
+            # Ensure RGB (some phones save RGBA / CMYK / palette PNGs)
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            buf = io.BytesIO()
+            img.save(buf, format='JPEG', quality=95)
+            return buf.getvalue()
+        except Exception:
+            # Non-fatal — return original bytes unchanged
+            return raw_bytes
+
     def _load_image_bytes(self, image_data):
         """
         Accept a base64 string (with or without data-URI prefix) or a Django
-        UploadedFile / any file-like object.  Returns raw JPEG/PNG bytes.
+        UploadedFile / any file-like object.  Returns raw JPEG bytes with EXIF
+        orientation baked in (so mobile selfies are always upright for DeepFace).
         """
         if isinstance(image_data, str):
             if ',' in image_data:
                 image_data = image_data.split(',', 1)[1]
-            return base64.b64decode(image_data)
-        if hasattr(image_data, 'seek'):
-            image_data.seek(0)
-        return image_data.read()
+            raw = base64.b64decode(image_data)
+        else:
+            if hasattr(image_data, 'seek'):
+                image_data.seek(0)
+            raw = image_data.read()
+        # ── Normalise EXIF orientation so DeepFace always sees an upright face ──
+        return self._normalize_image_orientation(raw)
 
     def _write_temp(self, content: bytes, suffix='.jpg') -> str:
         """Write bytes to a named temp file and return the path (caller must delete)."""
@@ -2076,7 +2124,7 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
                 representations = DeepFace.represent(
                     img_path=inc_path,
                     model_name='Facenet512',
-                    detector_backend='opencv',   # fastest detector for live frames
+                    detector_backend='retinaface',  # matches registration detector; handles mobile selfies correctly
                     enforce_detection=True,
                     align=True,
                 )
