@@ -15,13 +15,13 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class AttendanceSerializer(serializers.ModelSerializer):
-    user_name = serializers.CharField(source='user.get_full_name', read_only=True)
+    user_name = serializers.SerializerMethodField()
     user_username = serializers.CharField(source='user.username', read_only=True)
     check_in_time_formatted = serializers.SerializerMethodField()
     check_out_time_formatted = serializers.SerializerMethodField()
     date_formatted = serializers.SerializerMethodField()
-    late_approved_by_name = serializers.CharField(source='late_approved_by.get_full_name', read_only=True, allow_null=True)
-    verified_by_name = serializers.CharField(source='verified_by.get_full_name', read_only=True, allow_null=True)
+    late_approved_by_name = serializers.CharField(source='late_approved_by.full_name', read_only=True, allow_null=True)
+    verified_by_name = serializers.CharField(source='verified_by.full_name', read_only=True, allow_null=True)
     check_in_map_url = serializers.SerializerMethodField()
     check_out_map_url = serializers.SerializerMethodField()
     leave_type = serializers.SerializerMethodField()
@@ -52,6 +52,10 @@ class AttendanceSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'admin_owner': {'write_only': True, 'required': False},
         }
+
+    def get_user_name(self, obj):
+        full_name = (obj.user.full_name or "").strip()
+        return full_name if full_name else obj.user.username
 
     def get_check_in_time_formatted(self, obj):
         if obj.check_in_time:
@@ -178,10 +182,10 @@ class VerifyAttendanceSerializer(serializers.Serializer):
 
 class LateArrivalRequestSerializer(serializers.ModelSerializer):
     """Full read serializer – used in list/detail views."""
-    user_name = serializers.CharField(source='user.get_full_name', read_only=True)
+    user_name = serializers.SerializerMethodField()
     user_username = serializers.CharField(source='user.username', read_only=True)
     reviewed_by_name = serializers.CharField(
-        source='reviewed_by.get_full_name', read_only=True, allow_null=True
+        source='reviewed_by.full_name', read_only=True, allow_null=True
     )
     date_formatted = serializers.SerializerMethodField()
     arrival_time_formatted = serializers.SerializerMethodField()
@@ -205,6 +209,10 @@ class LateArrivalRequestSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'admin_owner': {'write_only': True, 'required': False},
         }
+
+    def get_user_name(self, obj):
+        full_name = (obj.user.full_name or "").strip()
+        return full_name if full_name else obj.user.username
 
     def get_date_formatted(self, obj):
         return obj.date.strftime('%d %b %Y') if obj.date else None
@@ -273,9 +281,9 @@ class LateArrivalApprovalSerializer(serializers.Serializer):
 
 class LeaveRequestSerializer(serializers.ModelSerializer):
     """Full serializer for LeaveRequest - used for list/detail views"""
-    user_name = serializers.CharField(source='user.get_full_name', read_only=True)
+    user_name = serializers.SerializerMethodField()
     user_username = serializers.CharField(source='user.username', read_only=True)
-    reviewed_by_name = serializers.CharField(source='reviewed_by.get_full_name', read_only=True, allow_null=True)
+    reviewed_by_name = serializers.CharField(source='reviewed_by.full_name', read_only=True, allow_null=True)
     total_days = serializers.ReadOnlyField()
     leave_type_display = serializers.CharField(source='get_leave_type_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
@@ -300,6 +308,10 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'admin_owner': {'write_only': True, 'required': False},
         }
+
+    def get_user_name(self, obj):
+        full_name = (obj.user.full_name or "").strip()
+        return full_name if full_name else obj.user.username
 
     def get_start_date_formatted(self, obj):
         return obj.start_date.strftime('%d %b %Y') if obj.start_date else None
@@ -428,20 +440,21 @@ class AttendanceSettingsSerializer(serializers.ModelSerializer):
 
 class EarlyDepartureRequestSerializer(serializers.ModelSerializer):
     """Full read serializer – used in list / detail views."""
-    user_name = serializers.CharField(source='user.get_full_name', read_only=True)
+    user_name = serializers.SerializerMethodField()
     user_username = serializers.CharField(source='user.username', read_only=True)
     reviewed_by_name = serializers.CharField(
-        source='reviewed_by.get_full_name', read_only=True, allow_null=True
+        source='reviewed_by.full_name', read_only=True, allow_null=True
     )
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     date_formatted = serializers.SerializerMethodField()
+    departure_time_formatted = serializers.SerializerMethodField()
 
     class Meta:
         model = EarlyDepartureRequest
         fields = [
             'id', 'user', 'user_name', 'user_username',
             'date', 'date_formatted',
-            'expected_departure_time',
+            'expected_departure_time', 'departure_time_formatted',
             'reason', 'status', 'status_display',
             'reviewed_by', 'reviewed_by_name', 'reviewed_at',
             'admin_notes',
@@ -457,8 +470,22 @@ class EarlyDepartureRequestSerializer(serializers.ModelSerializer):
             'admin_owner': {'write_only': True, 'required': False},
         }
 
+    def get_user_name(self, obj):
+        full_name = (obj.user.full_name or "").strip()
+        return full_name if full_name else obj.user.username
+
     def get_date_formatted(self, obj):
         return obj.date.strftime('%d %b %Y') if obj.date else None
+
+    def get_departure_time_formatted(self, obj):
+        if obj.expected_departure_time:
+            t = obj.expected_departure_time
+            hour = t.hour
+            minute = t.minute
+            am_pm = 'AM' if hour < 12 else 'PM'
+            hour_12 = hour % 12 or 12
+            return f"{hour_12:02d}:{minute:02d} {am_pm}"
+        return None
 
 
 class CreateEarlyDepartureRequestSerializer(serializers.ModelSerializer):
