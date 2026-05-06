@@ -251,6 +251,47 @@ class Employee(models.Model):
 
 
 # ---------------------------------------------------------------------------
+# Salary Increment History
+# ---------------------------------------------------------------------------
+class SalaryIncrementHistory(models.Model):
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.CASCADE,
+        related_name='salary_increment_logs',
+    )
+    increment_date = models.DateField(help_text='Date the salary increment was applied')
+    old_salary = models.DecimalField(max_digits=10, decimal_places=2)
+    new_salary = models.DecimalField(max_digits=10, decimal_places=2)
+    increment_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    increment_percentage = models.DecimalField(
+        max_digits=7,
+        decimal_places=2,
+        help_text='Calculated as (increment_amount / old_salary) * 100',
+    )
+    increment_cycle_months = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        choices=Employee.INCREMENT_CYCLE_CHOICES,
+    )
+    next_increment_date = models.DateField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='salary_increment_logs',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-increment_date', '-created_at']
+
+    def __str__(self):
+        return f'{self.employee} salary increment on {self.increment_date}'
+
+
+# ---------------------------------------------------------------------------
 # Custom Field Definition
 # ---------------------------------------------------------------------------
 class CustomFieldDefinition(models.Model):

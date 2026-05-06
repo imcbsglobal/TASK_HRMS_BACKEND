@@ -11,6 +11,7 @@ from .views import (
     EmployeeAssetListCreateView,
     EmployeeAssetDetailView,
     UpcomingIncrementsView,
+    SalaryIncrementHistoryView,
 )
 
 urlpatterns = [
@@ -18,6 +19,7 @@ urlpatterns = [
     path("candidate-to-employee/<int:candidate_id>/", CandidateToEmployeeView.as_view()),
     path("employees/", EmployeeListCreateView.as_view()),
     path("employees/<int:pk>/", EmployeeDetailView.as_view()),
+    path("employees/<int:pk>/salary-increments/", SalaryIncrementHistoryView.as_view(), name="salary-increment-history"),
 
     # ── Offboarding ────────────────────────────────────────────────────────────
     # POST: marks employee terminated + deactivates linked user account

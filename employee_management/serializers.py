@@ -1,5 +1,11 @@
 from rest_framework import serializers
-from .models import Employee, Department, CustomFieldDefinition, EmployeeAsset
+from .models import (
+    Employee,
+    Department,
+    CustomFieldDefinition,
+    EmployeeAsset,
+    SalaryIncrementHistory,
+)
 
 
 class DepartmentSerializer(serializers.ModelSerializer):
@@ -103,6 +109,38 @@ class EmployeeSerializer(serializers.ModelSerializer):
             # admin_owner is injected by the view; clients must never supply it
             'admin_owner': {'write_only': True, 'required': False},
         }
+
+
+class SalaryIncrementHistorySerializer(serializers.ModelSerializer):
+    employee_name = serializers.SerializerMethodField()
+    employee_code = serializers.CharField(source='employee.employee_id', read_only=True)
+    created_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SalaryIncrementHistory
+        fields = [
+            'id', 'employee', 'employee_code', 'employee_name',
+            'increment_date', 'old_salary', 'new_salary',
+            'increment_amount', 'increment_percentage',
+            'increment_cycle_months', 'next_increment_date',
+            'notes', 'created_by', 'created_by_name', 'created_at',
+        ]
+        read_only_fields = [
+            'id', 'employee_code', 'employee_name',
+            'increment_amount', 'increment_percentage',
+            'created_by', 'created_by_name', 'created_at',
+        ]
+
+    def get_employee_name(self, obj):
+        return f'{obj.employee.first_name} {obj.employee.last_name}'.strip()
+
+    def get_created_by_name(self, obj):
+        if not obj.created_by:
+            return None
+        return (
+            f'{obj.created_by.first_name} {obj.created_by.last_name}'.strip()
+            or obj.created_by.username
+        )
 
 
 class EmployeeAssetSerializer(serializers.ModelSerializer):

@@ -1,14 +1,19 @@
+from decimal import Decimal
+
 from django.contrib.auth import get_user_model
+from django.db import transaction
+from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
 
 from HR.models import Candidate
-from .models import Employee, Department, CustomFieldDefinition
+from .models import Employee, Department, CustomFieldDefinition, SalaryIncrementHistory
 from .serializers import (
     EmployeeSerializer,
     DepartmentSerializer,
     CustomFieldDefinitionSerializer,
+    SalaryIncrementHistorySerializer,
 )
 
 User = get_user_model()
@@ -214,9 +219,50 @@ class EmployeeDetailView(APIView):
             return err
 
         old_status = employee.status
+        old_salary = employee.salary
+        old_last_increment_date = employee.last_increment_date
+        old_increment_cycle_months = employee.increment_cycle_months
+        old_next_increment_date = employee.next_increment_date
         serializer = EmployeeSerializer(employee, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        updated_employee = serializer.save()
+
+        with transaction.atomic():
+            updated_employee = serializer.save()
+
+            salary_increased = updated_employee.salary > old_salary
+            increment_schedule_changed = any([
+                updated_employee.last_increment_date != old_last_increment_date,
+                updated_employee.increment_cycle_months != old_increment_cycle_months,
+                updated_employee.next_increment_date != old_next_increment_date,
+            ])
+
+            if salary_increased or increment_schedule_changed:
+                increment_amount = (
+                    updated_employee.salary - old_salary
+                    if salary_increased else Decimal('0.00')
+                )
+                increment_percentage = Decimal('0.00')
+                if salary_increased and old_salary:
+                    increment_percentage = (
+                        (increment_amount / old_salary) * Decimal('100')
+                    ).quantize(Decimal('0.01'))
+
+                notes = request.data.get('increment_notes', '')
+                if not notes and increment_schedule_changed and not salary_increased:
+                    notes = 'Increment schedule updated'
+
+                SalaryIncrementHistory.objects.create(
+                    employee=updated_employee,
+                    increment_date=updated_employee.last_increment_date or timezone.localdate(),
+                    old_salary=old_salary,
+                    new_salary=updated_employee.salary,
+                    increment_amount=increment_amount,
+                    increment_percentage=increment_percentage,
+                    increment_cycle_months=updated_employee.increment_cycle_months,
+                    next_increment_date=updated_employee.next_increment_date,
+                    notes=notes,
+                    created_by=request.user,
+                )
 
         # Auto-deactivate linked User when transitioning into an offboarded state
         new_status = updated_employee.status
@@ -238,6 +284,33 @@ class EmployeeDetailView(APIView):
 
         employee.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# Salary Increment History
+# ---------------------------------------------------------------------------
+class SalaryIncrementHistoryView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get_employee(self, request, pk):
+        try:
+            employee = _employee_qs(request.user).get(pk=pk)
+        except Employee.DoesNotExist:
+            return None, Response(
+                {"error": "Employee not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return employee, None
+
+    def get(self, request, pk):
+        employee, err = self._get_employee(request, pk)
+        if err:
+            return err
+
+        logs = employee.salary_increment_logs.select_related(
+            'employee', 'created_by'
+        ).all()
+        return Response(SalaryIncrementHistorySerializer(logs, many=True).data)
 
 
 # ---------------------------------------------------------------------------
