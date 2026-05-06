@@ -90,6 +90,35 @@ class Employee(models.Model):
     date_of_birth   = models.DateField(null=True, blank=True)
     date_of_joining = models.DateField()
 
+    # ── Probation Details ─────────────────────────────────────────────────────
+    probation_period_months = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text='Duration of the probation period in months (e.g. 3 or 6). '
+                  'Leave blank if no probation applies.',
+    )
+    probation_end_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text='Auto-calculated from date_of_joining + probation_period_months when saved.',
+    )
+
+    @property
+    def probation_status(self):
+        """
+        Returns one of:
+          'no_probation'          – probation_period_months is not set
+          'on_probation'          – today is before or on probation_end_date
+          'probation_completed'   – today is after probation_end_date
+        """
+        if not self.probation_period_months or not self.probation_end_date:
+            return 'no_probation'
+        from django.utils.timezone import now
+        today = now().date()
+        if today <= self.probation_end_date:
+            return 'on_probation'
+        return 'probation_completed'
+
     address                         = models.TextField(blank=True)
     emergency_contact               = models.CharField(max_length=20, blank=True)
     emergency_contact_name          = models.CharField(max_length=100, blank=True)
@@ -244,6 +273,12 @@ class Employee(models.Model):
                 self.employee_id = 'EMP0001'
         # Auto-compute next_increment_date when a cycle is configured
         self.next_increment_date = self._compute_next_increment_date()
+        # Auto-compute probation_end_date from date_of_joining + probation_period_months
+        if self.date_of_joining and self.probation_period_months:
+            from dateutil.relativedelta import relativedelta
+            self.probation_end_date = self.date_of_joining + relativedelta(months=self.probation_period_months)
+        elif not self.probation_period_months:
+            self.probation_end_date = None
         super().save(*args, **kwargs)
 
     def __str__(self):

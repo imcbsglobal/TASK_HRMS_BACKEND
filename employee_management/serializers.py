@@ -68,6 +68,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
     candidate_id = serializers.IntegerField(
         source="candidate.id", read_only=True, allow_null=True
     )
+    probation_status = serializers.CharField(read_only=True)
 
     class Meta:
         model = Employee
@@ -78,6 +79,8 @@ class EmployeeSerializer(serializers.ModelSerializer):
             'department', 'department_name', 'position',
             'employment_type', 'status', 'work_location',
             'date_of_birth', 'date_of_joining',
+            # Probation
+            'probation_period_months', 'probation_end_date', 'probation_status',
             'address', 'emergency_contact', 'emergency_contact_name',
             'emergency_contact_relationship',
             # Salary Details
@@ -104,6 +107,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'employee_id', 'created_at', 'updated_at',
             'department_name', 'candidate_id',
+            'probation_end_date', 'probation_status',
         ]
         extra_kwargs = {
             # admin_owner is injected by the view; clients must never supply it
