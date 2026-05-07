@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest, EmployeeFaceData
+from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest, EmployeeFaceData, BreakRecord
 from django.utils import timezone
 from datetime import datetime, timedelta
 import pytz
@@ -26,6 +26,7 @@ class AttendanceSerializer(serializers.ModelSerializer):
     check_out_map_url = serializers.SerializerMethodField()
     leave_type = serializers.SerializerMethodField()
     leave_type_display = serializers.SerializerMethodField()
+    break_records = serializers.SerializerMethodField()
 
     class Meta:
         model = Attendance
@@ -40,12 +41,13 @@ class AttendanceSerializer(serializers.ModelSerializer):
             'check_in_latitude', 'check_in_longitude', 'check_in_address', 'check_in_map_url',
             'check_out_latitude', 'check_out_longitude', 'check_out_address', 'check_out_map_url',
             'leave_type', 'leave_type_display',
+            'total_break_minutes', 'break_records',
             # Tenant – injected by the view, never from client
             'admin_owner',
             'created_at', 'updated_at',
         ]
         read_only_fields = [
-            'total_hours', 'created_at', 'updated_at',
+            'total_hours', 'total_break_minutes', 'created_at', 'updated_at',
             'late_approved_by', 'late_approved_at',
             'verified_by', 'verified_at',
         ]
@@ -99,6 +101,54 @@ class AttendanceSerializer(serializers.ModelSerializer):
         leave = self._get_leave_request(obj)
         return leave.get_leave_type_display() if leave else None
 
+    def get_break_records(self, obj):
+        return BreakRecordSerializer(obj.breaks.all(), many=True).data
+
+
+class BreakRecordSerializer(serializers.ModelSerializer):
+    user_name = serializers.SerializerMethodField()
+    user_username = serializers.CharField(source='user.username', read_only=True)
+    date = serializers.DateField(source='attendance.date', read_only=True)
+    break_start_formatted = serializers.SerializerMethodField()
+    break_end_formatted = serializers.SerializerMethodField()
+    duration_formatted = serializers.SerializerMethodField()
+    is_active = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = BreakRecord
+        fields = [
+            'id', 'user', 'user_name', 'user_username', 'attendance', 'date',
+            'break_start', 'break_start_formatted',
+            'break_end', 'break_end_formatted',
+            'duration_minutes', 'duration_formatted', 'is_active',
+            'admin_owner', 'created_at', 'updated_at',
+        ]
+        read_only_fields = fields
+
+    def get_user_name(self, obj):
+        full_name = (obj.user.full_name or "").strip()
+        return full_name if full_name else obj.user.username
+
+    def _format_time(self, value):
+        if value:
+            ist = pytz.timezone('Asia/Kolkata')
+            return value.astimezone(ist).strftime('%I:%M %p')
+        return None
+
+    def get_break_start_formatted(self, obj):
+        return self._format_time(obj.break_start)
+
+    def get_break_end_formatted(self, obj):
+        return self._format_time(obj.break_end)
+
+    def get_duration_formatted(self, obj):
+        minutes = obj.duration_minutes or 0
+        hours = minutes // 60
+        mins = minutes % 60
+        if hours:
+            return f"{hours}h {mins}m"
+        return f"{mins}m"
+
 
 class CheckInSerializer(serializers.Serializer):
     notes = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -131,6 +181,8 @@ class CheckOutSerializer(serializers.Serializer):
             raise serializers.ValidationError("You haven't checked in yet.")
         if attendance.check_out_time:
             raise serializers.ValidationError("You have already checked out today.")
+        if BreakRecord.objects.filter(user=user, attendance=attendance, break_end__isnull=True).exists():
+            raise serializers.ValidationError("Please end your active break before checking out.")
         return data
 
 

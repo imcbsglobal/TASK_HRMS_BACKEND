@@ -35,6 +35,7 @@ class Attendance(models.Model):
     check_out_time = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='absent')
     total_hours = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
+    total_break_minutes = models.IntegerField(default=0, help_text='Total break duration in minutes for this day.')
     notes = models.TextField(blank=True, null=True)
 
     check_in_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
@@ -101,6 +102,51 @@ class Attendance(models.Model):
         if self.check_in_time and self.check_out_time:
             self.calculate_hours()
         self.determine_status()
+        super().save(*args, **kwargs)
+
+
+class BreakRecord(models.Model):
+    admin_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='owned_break_records',
+        null=True, blank=True,
+        help_text="The admin/tenant who owns this break record.",
+    )
+    attendance = models.ForeignKey(
+        Attendance,
+        on_delete=models.CASCADE,
+        related_name='breaks',
+        help_text='The attendance record this break belongs to.',
+    )
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='break_records')
+    break_start = models.DateTimeField(help_text='When the break started.')
+    break_end = models.DateTimeField(null=True, blank=True, help_text='When the break ended (null = ongoing).')
+    duration_minutes = models.IntegerField(default=0, help_text='Break duration in minutes.')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['break_start']
+        verbose_name = 'Break Record'
+        verbose_name_plural = 'Break Records'
+
+    def __str__(self):
+        return f"{self.user.username} break - {self.break_start}"
+
+    @property
+    def is_active(self):
+        return self.break_end is None
+
+    def calculate_duration(self):
+        if self.break_start and self.break_end:
+            seconds = (self.break_end - self.break_start).total_seconds()
+            self.duration_minutes = max(0, int(seconds // 60))
+        return self.duration_minutes
+
+    def save(self, *args, **kwargs):
+        if self.break_end:
+            self.calculate_duration()
         super().save(*args, **kwargs)
 
 

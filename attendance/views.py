@@ -54,7 +54,7 @@ except Exception:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest, EmployeeFaceData
+from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest, EmployeeFaceData, BreakRecord
 from .geofence import validate_geofence
 from .serializers import (
     AttendanceSerializer, CheckInSerializer, CheckOutSerializer,
@@ -66,6 +66,7 @@ from .serializers import (
     LateArrivalApprovalSerializer,
     EarlyDepartureRequestSerializer, CreateEarlyDepartureRequestSerializer,
     EarlyDepartureApprovalSerializer,
+    BreakRecordSerializer,
 )
 
 
@@ -375,6 +376,113 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             'attendance': AttendanceSerializer(attendance).data
         }, status=status.HTTP_200_OK)
 
+    def _sync_break_total(self, attendance):
+        total = attendance.breaks.filter(break_end__isnull=False).aggregate(
+            total=Sum('duration_minutes')
+        )['total'] or 0
+        attendance.total_break_minutes = total
+        attendance.save(update_fields=['total_break_minutes', 'updated_at'])
+        return total
+
+    @action(detail=False, methods=['post'], url_path='breaks/start')
+    def start_break(self, request):
+        user = request.user
+        today = timezone.now().date()
+        admin_owner = _get_admin_owner(user)
+
+        try:
+            attendance = Attendance.objects.get(user=user, date=today, admin_owner=admin_owner)
+        except Attendance.DoesNotExist:
+            return Response({'error': 'You must check in before starting a break.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not attendance.check_in_time:
+            return Response({'error': 'You must check in before starting a break.'}, status=status.HTTP_400_BAD_REQUEST)
+        if attendance.check_out_time:
+            return Response({'error': 'You cannot start a break after check-out.'}, status=status.HTTP_400_BAD_REQUEST)
+        if BreakRecord.objects.filter(user=user, attendance=attendance, break_end__isnull=True).exists():
+            return Response({'error': 'You already have an active break.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        break_record = BreakRecord.objects.create(
+            user=user,
+            attendance=attendance,
+            admin_owner=admin_owner,
+            break_start=timezone.now(),
+        )
+
+        return Response({
+            'message': 'Break started successfully',
+            'break': BreakRecordSerializer(break_record).data,
+            'attendance': AttendanceSerializer(attendance).data,
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'], url_path='breaks/end')
+    def end_break(self, request):
+        user = request.user
+        today = timezone.now().date()
+        admin_owner = _get_admin_owner(user)
+
+        try:
+            attendance = Attendance.objects.get(user=user, date=today, admin_owner=admin_owner)
+        except Attendance.DoesNotExist:
+            return Response({'error': 'No check-in record found for today.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        break_record = BreakRecord.objects.filter(
+            user=user,
+            attendance=attendance,
+            break_end__isnull=True,
+        ).order_by('-break_start').first()
+        if not break_record:
+            return Response({'error': 'No active break found.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        break_record.break_end = timezone.now()
+        break_record.save()
+        total_break_minutes = self._sync_break_total(attendance)
+
+        return Response({
+            'message': 'Break ended successfully',
+            'break': BreakRecordSerializer(break_record).data,
+            'total_break_minutes': total_break_minutes,
+            'attendance': AttendanceSerializer(attendance).data,
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], url_path='breaks/today')
+    def today_breaks(self, request):
+        user = request.user
+        today = timezone.now().date()
+        admin_owner = _get_admin_owner(user)
+
+        attendance = Attendance.objects.filter(user=user, date=today, admin_owner=admin_owner).first()
+        breaks = BreakRecord.objects.none()
+        if attendance:
+            breaks = attendance.breaks.select_related('user', 'attendance')
+
+        active_break = breaks.filter(break_end__isnull=True).order_by('-break_start').first()
+        total_break_minutes = attendance.total_break_minutes if attendance else 0
+
+        return Response({
+            'has_active_break': bool(active_break),
+            'active_break': BreakRecordSerializer(active_break).data if active_break else None,
+            'total_break_minutes': total_break_minutes,
+            'breaks': BreakRecordSerializer(breaks, many=True).data,
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], url_path='breaks/list')
+    def breaks_list(self, request):
+        if not _is_admin(request.user):
+            return Response({'error': 'Only admins can view break records.'}, status=status.HTTP_403_FORBIDDEN)
+
+        admin_owner = _get_admin_owner(request.user)
+        selected_date = request.query_params.get('date')
+        user_id = request.query_params.get('user_id')
+
+        breaks = BreakRecord.objects.select_related('user', 'attendance').filter(admin_owner=admin_owner)
+        if selected_date:
+            breaks = breaks.filter(attendance__date=selected_date)
+        if user_id:
+            breaks = breaks.filter(user_id=user_id)
+
+        return Response(BreakRecordSerializer(breaks.order_by('-break_start'), many=True).data, status=status.HTTP_200_OK)
+
     @action(detail=False, methods=['get'], url_path='today')
     def today_status(self, request):
         user = request.user
@@ -399,6 +507,9 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 'check_out_latitude': attendance.check_out_latitude,
                 'check_out_longitude': attendance.check_out_longitude,
                 'check_out_address': attendance.check_out_address,
+                'total_break_minutes': attendance.total_break_minutes,
+                'breaks': BreakRecordSerializer(attendance.breaks.all(), many=True).data,
+                'has_active_break': attendance.breaks.filter(break_end__isnull=True).exists(),
             }
         except Attendance.DoesNotExist:
             data = {
@@ -417,6 +528,9 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 'check_out_latitude': None,
                 'check_out_longitude': None,
                 'check_out_address': None,
+                'total_break_minutes': 0,
+                'breaks': [],
+                'has_active_break': False,
             }
 
         return Response(data, status=status.HTTP_200_OK)
