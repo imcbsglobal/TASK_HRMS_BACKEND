@@ -41,6 +41,8 @@ DEBUG = True
 ALLOWED_HOSTS = [
     'hrms.imcbs.com',
     'www.hrms.imcbs.com',
+    'trellisco.in',
+    'www.trellisco.in',
     'localhost',
     '127.0.0.1'
 ]
