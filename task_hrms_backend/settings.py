@@ -86,7 +86,14 @@ MIDDLEWARE = [
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
-    "http://localhost:5173", 
+    "http://localhost:5173",
+    "https://trellisco.in",
+    "https://www.trellisco.in",
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://trellisco.in",
+    "https://www.trellisco.in",
 ]
 
 REST_FRAMEWORK = {
