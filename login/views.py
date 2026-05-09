@@ -302,7 +302,7 @@ import requests as http_requests
 class LicenseCustomersProxyView(APIView):
     permission_classes = [IsAuthenticated]
 
-    LICENSE_API_URL = "https://activate.imcbs.com/mobileapp/api/project/hrms/"
+    LICENSE_API_URL = "https://activate.imcbs.com/mobileapp/api/project/trellisco/"
 
     def get(self, request):
         if request.user.role != 'SUPER_ADMIN':
