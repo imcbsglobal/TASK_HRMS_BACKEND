@@ -82,66 +82,40 @@ def _custom_field_qs(user):
     if admin is None:
         return CustomFieldDefinition.objects.none()
 
-    return CustomFieldDefinition.objects.filter(
-        admin_owner=admin, is_active=True
-    )
+    return CustomFieldDefinition.objects.filter(admin_owner=admin, is_active=True)
 
 
 def _deactivate_linked_user(employee):
     """
-    Deactivate the system User account linked to this employee.
+    Deactivate the system User account linked to this employee (if any).
 
-    Lookup order:
-      1. employee.candidate.user  (if HR Candidate has a user FK)
-      2. User matched by employee email  (fallback)
+    Priority:
+      1. employee.candidate.user  (cleanest link)
+      2. User whose email matches employee.email
 
-    Returns the deactivated User instance, or None if no match was found.
+    Returns the deactivated User, or None.
     """
     linked_user = None
 
-    # 1. Try via candidate → user FK
-    try:
-        if employee.candidate_id:
-            candidate = employee.candidate
-            if hasattr(candidate, 'user') and candidate.user is not None:
-                linked_user = candidate.user
-    except Exception:
-        pass
+    # 1. Via candidate → user link
+    if (
+        hasattr(employee, 'candidate')
+        and employee.candidate
+        and hasattr(employee.candidate, 'user')
+        and employee.candidate.user
+    ):
+        linked_user = employee.candidate.user
 
-    # 2. Fall back to email match
+    # 2. Fallback: match by email
     if linked_user is None and employee.email:
         linked_user = User.objects.filter(email=employee.email).first()
 
     if linked_user and linked_user.is_active:
         linked_user.is_active = False
         linked_user.save(update_fields=['is_active'])
+        return linked_user
 
-    return linked_user
-
-
-# ---------------------------------------------------------------------------
-# Candidate → Employee prefill
-# ---------------------------------------------------------------------------
-class CandidateToEmployeeView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request, candidate_id):
-        try:
-            candidate = Candidate.objects.get(id=candidate_id)
-        except Candidate.DoesNotExist:
-            return Response(
-                {"error": "Candidate not found."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        name_parts = candidate.name.strip().split(" ", 1)
-        return Response({
-            "candidate_id": candidate.id,
-            "first_name":   name_parts[0],
-            "last_name":    name_parts[1] if len(name_parts) > 1 else "",
-            "email":        candidate.email,
-            "phone":        candidate.phone,
-        })
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -151,12 +125,7 @@ class EmployeeListCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        """
-        SUPER_ADMIN → all employees
-        ADMIN       → only their own employees
-        USER        → only their admin's employees (read-only context)
-        """
-        employees  = _employee_qs(request.user)
+        employees = _employee_qs(request.user)
         serializer = EmployeeSerializer(employees, many=True)
         return Response(serializer.data)
 
@@ -287,7 +256,7 @@ class EmployeeDetailView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# Salary Increment History
+# Salary Increment History  (GET list + POST create)
 # ---------------------------------------------------------------------------
 class SalaryIncrementHistoryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -303,6 +272,7 @@ class SalaryIncrementHistoryView(APIView):
         return employee, None
 
     def get(self, request, pk):
+        """GET /employee/employees/<pk>/salary-increments/ — list all increment logs."""
         employee, err = self._get_employee(request, pk)
         if err:
             return err
@@ -311,6 +281,179 @@ class SalaryIncrementHistoryView(APIView):
             'employee', 'created_by'
         ).all()
         return Response(SalaryIncrementHistorySerializer(logs, many=True).data)
+
+    def post(self, request, pk):
+        """
+        POST /employee/employees/<pk>/salary-increments/
+        Add a new salary increment directly from the Increment Log page.
+
+        Expected body:
+          {
+            "increment_date":       "2025-04-01",
+            "new_salary":           75000,
+            "increment_cycle_months": 12,   (optional)
+            "next_increment_date":  "2026-04-01",  (optional)
+            "notes":                "Annual revision"  (optional)
+          }
+        """
+        if request.user.role == 'USER':
+            return Response(
+                {"detail": "You do not have permission to add salary increments."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        employee, err = self._get_employee(request, pk)
+        if err:
+            return err
+
+        new_salary_raw = request.data.get('new_salary')
+        increment_date = request.data.get('increment_date') or str(timezone.localdate())
+
+        if new_salary_raw is None:
+            return Response(
+                {"error": "new_salary is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            new_salary = Decimal(str(new_salary_raw))
+        except Exception:
+            return Response(
+                {"error": "new_salary must be a valid number."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        old_salary = employee.salary or Decimal('0.00')
+        increment_amount = new_salary - old_salary
+        increment_percentage = Decimal('0.00')
+        if old_salary and increment_amount != Decimal('0.00'):
+            increment_percentage = (
+                (increment_amount / old_salary) * Decimal('100')
+            ).quantize(Decimal('0.01'))
+
+        cycle = request.data.get('increment_cycle_months')
+        next_date = request.data.get('next_increment_date') or None
+        notes = request.data.get('notes', '')
+
+        with transaction.atomic():
+            # Update the employee's salary and increment tracking fields
+            employee.salary = new_salary
+            employee.last_increment_date = increment_date
+            if cycle is not None:
+                employee.increment_cycle_months = int(cycle) if cycle != '' else None
+            if next_date:
+                employee.next_increment_date = next_date
+            employee.save(update_fields=[
+                'salary', 'last_increment_date',
+                'increment_cycle_months', 'next_increment_date', 'updated_at',
+            ])
+
+            log = SalaryIncrementHistory.objects.create(
+                employee=employee,
+                increment_date=increment_date,
+                old_salary=old_salary,
+                new_salary=new_salary,
+                increment_amount=increment_amount,
+                increment_percentage=increment_percentage,
+                increment_cycle_months=int(cycle) if cycle not in (None, '') else None,
+                next_increment_date=next_date or None,
+                notes=notes,
+                created_by=request.user,
+            )
+
+        return Response(
+            SalaryIncrementHistorySerializer(log).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Salary Increment History Detail  (PUT update + DELETE)
+# ---------------------------------------------------------------------------
+class SalaryIncrementHistoryDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get_log(self, request, pk, log_id):
+        """Fetch the log record, ensuring it belongs to a tenant-visible employee."""
+        try:
+            employee = _employee_qs(request.user).get(pk=pk)
+        except Employee.DoesNotExist:
+            return None, None, Response(
+                {"error": "Employee not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        try:
+            log = employee.salary_increment_logs.get(pk=log_id)
+        except SalaryIncrementHistory.DoesNotExist:
+            return None, None, Response(
+                {"error": "Increment record not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return employee, log, None
+
+    def put(self, request, pk, log_id):
+        """
+        PUT /employee/employees/<pk>/salary-increments/<log_id>/
+        Edit an existing increment log entry (notes, dates, cycle).
+        Does NOT change employee salary — editing history only.
+        """
+        if request.user.role == 'USER':
+            return Response(
+                {"detail": "You do not have permission to edit salary increments."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        employee, log, err = self._get_log(request, pk, log_id)
+        if err:
+            return err
+
+        # Only allow editing of editable fields on the log record
+        editable_fields = [
+            'increment_date', 'new_salary', 'increment_cycle_months',
+            'next_increment_date', 'notes',
+        ]
+        for field in editable_fields:
+            if field in request.data:
+                if field == 'new_salary':
+                    try:
+                        val = Decimal(str(request.data[field]))
+                        log.new_salary = val
+                        log.increment_amount = val - log.old_salary
+                        if log.old_salary:
+                            log.increment_percentage = (
+                                (log.increment_amount / log.old_salary) * Decimal('100')
+                            ).quantize(Decimal('0.01'))
+                    except Exception:
+                        return Response(
+                            {"error": "new_salary must be a valid number."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                elif field == 'increment_cycle_months':
+                    v = request.data[field]
+                    log.increment_cycle_months = int(v) if v not in (None, '') else None
+                else:
+                    setattr(log, field, request.data[field] or None if field in ('next_increment_date',) else request.data[field])
+
+        log.save()
+        return Response(SalaryIncrementHistorySerializer(log).data)
+
+    def delete(self, request, pk, log_id):
+        """
+        DELETE /employee/employees/<pk>/salary-increments/<log_id>/
+        Remove an increment record.
+        """
+        if request.user.role not in ('SUPER_ADMIN', 'ADMIN'):
+            return Response(
+                {"detail": "You do not have permission to delete increment records."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        employee, log, err = self._get_log(request, pk, log_id)
+        if err:
+            return err
+
+        log.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +531,6 @@ class DepartmentListCreateView(APIView):
 
         admin = _get_admin_owner(request.user)
         serializer.save(admin_owner=admin)
-
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -417,12 +559,10 @@ class DepartmentDetailView(APIView):
                 {"detail": "You do not have permission to update departments."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-
         dept, err = self._get_department(request, pk)
         if err:
             return err
-
-        serializer = DepartmentSerializer(dept, data=request.data)
+        serializer = DepartmentSerializer(dept, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
@@ -433,17 +573,9 @@ class DepartmentDetailView(APIView):
                 {"detail": "You do not have permission to delete departments."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-
         dept, err = self._get_department(request, pk)
         if err:
             return err
-
-        if dept.employees.exists():
-            return Response(
-                {"error": "Cannot delete department with associated employees."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         dept.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -455,7 +587,7 @@ class CustomFieldDefinitionListCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        fields     = _custom_field_qs(request.user)
+        fields = _custom_field_qs(request.user).order_by('display_order', 'id')
         serializer = CustomFieldDefinitionSerializer(fields, many=True)
         return Response(serializer.data)
 
@@ -465,13 +597,10 @@ class CustomFieldDefinitionListCreateView(APIView):
                 {"detail": "You do not have permission to create custom fields."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-
         serializer = CustomFieldDefinitionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
         admin = _get_admin_owner(request.user)
         serializer.save(admin_owner=admin)
-
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -479,10 +608,8 @@ class CustomFieldDefinitionDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def _get_field(self, request, pk):
-        # Note: include inactive fields for detail operations (soft-delete awareness)
-        qs = _custom_field_qs(request.user).filter(is_active__in=[True, False])
         try:
-            field = qs.get(pk=pk)
+            field = _custom_field_qs(request.user).get(pk=pk)
         except CustomFieldDefinition.DoesNotExist:
             return None, Response(
                 {"error": "Custom field not found."},
@@ -502,11 +629,9 @@ class CustomFieldDefinitionDetailView(APIView):
                 {"detail": "You do not have permission to update custom fields."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-
         field, err = self._get_field(request, pk)
         if err:
             return err
-
         serializer = CustomFieldDefinitionSerializer(field, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
@@ -518,19 +643,16 @@ class CustomFieldDefinitionDetailView(APIView):
                 {"detail": "You do not have permission to delete custom fields."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-
         field, err = self._get_field(request, pk)
         if err:
             return err
-
-        # Soft delete
         field.is_active = False
-        field.save()
+        field.save(update_fields=['is_active', 'updated_at'])
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # ---------------------------------------------------------------------------
-# Employee Assets
+# Employee Asset CRUD
 # ---------------------------------------------------------------------------
 from .models import EmployeeAsset
 from .serializers import EmployeeAssetSerializer
@@ -540,37 +662,23 @@ class EmployeeAssetListCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def _get_employee(self, request, employee_id):
-        """Fetch employee enforcing tenant scope."""
         try:
             return _employee_qs(request.user).get(pk=employee_id), None
         except Employee.DoesNotExist:
-            return None, Response(
-                {"error": "Employee not found."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+            return None, Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
 
     def get(self, request, employee_id):
-        _, err = self._get_employee(request, employee_id)
+        employee, err = self._get_employee(request, employee_id)
         if err:
             return err
-
-        assets = EmployeeAsset.objects.filter(
-            employee_id=employee_id
-        ).order_by('-assigned_date')
+        assets = employee.assets.all()
         return Response(EmployeeAssetSerializer(assets, many=True).data)
 
     def post(self, request, employee_id):
-        if request.user.role == 'USER':
-            return Response(
-                {"detail": "You do not have permission to assign assets."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        _, err = self._get_employee(request, employee_id)
+        employee, err = self._get_employee(request, employee_id)
         if err:
             return err
-
-        data       = {**request.data, 'employee': employee_id}
+        data = {**request.data, 'employee': employee.id}
         serializer = EmployeeAssetSerializer(data=data)
         serializer.is_valid(raise_exception=True)
         serializer.save()
@@ -581,108 +689,99 @@ class EmployeeAssetDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def _get_asset(self, request, employee_id, pk):
-        # First confirm the employee is in scope for this tenant
         try:
-            _employee_qs(request.user).get(pk=employee_id)
+            employee = _employee_qs(request.user).get(pk=employee_id)
         except Employee.DoesNotExist:
-            return None, Response(
-                {"error": "Employee not found."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+            return None, Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
         try:
-            asset = EmployeeAsset.objects.get(pk=pk, employee_id=employee_id)
+            asset = employee.assets.get(pk=pk)
         except EmployeeAsset.DoesNotExist:
-            return None, Response(
-                {"error": "Asset not found."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+            return None, Response({"error": "Asset not found."}, status=status.HTTP_404_NOT_FOUND)
         return asset, None
 
-    def put(self, request, employee_id, pk):
-        if request.user.role == 'USER':
-            return Response(
-                {"detail": "You do not have permission to update assets."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
+    def get(self, request, employee_id, pk):
         asset, err = self._get_asset(request, employee_id, pk)
         if err:
             return err
+        return Response(EmployeeAssetSerializer(asset).data)
 
+    def put(self, request, employee_id, pk):
+        asset, err = self._get_asset(request, employee_id, pk)
+        if err:
+            return err
         serializer = EmployeeAssetSerializer(asset, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
 
     def delete(self, request, employee_id, pk):
-        if request.user.role not in ('SUPER_ADMIN', 'ADMIN'):
-            return Response(
-                {"detail": "You do not have permission to delete assets."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
         asset, err = self._get_asset(request, employee_id, pk)
         if err:
             return err
-
         asset.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+
 # ---------------------------------------------------------------------------
-# Upcoming Increments  (Dashboard widget)
+# Candidate → Employee conversion
+# ---------------------------------------------------------------------------
+class CandidateToEmployeeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, candidate_id):
+        try:
+            candidate = Candidate.objects.get(pk=candidate_id)
+        except Candidate.DoesNotExist:
+            return Response({"error": "Candidate not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({
+            "candidate_id": candidate.id,
+            "first_name": candidate.name.split()[0] if candidate.name else '',
+            "last_name": ' '.join(candidate.name.split()[1:]) if candidate.name and len(candidate.name.split()) > 1 else '',
+            "email": candidate.email or '',
+            "phone": candidate.phone or '',
+        })
+
+
+# ---------------------------------------------------------------------------
+# Upcoming Increments  (dashboard widget)
 # GET /employee/upcoming-increments/?days=30
-# Returns employees whose next_increment_date falls within the next N days.
 # ---------------------------------------------------------------------------
-from datetime import date, timedelta
-
-
 class UpcomingIncrementsView(APIView):
     """
     Return employees with a next_increment_date within the next `days` days
     (default 30).  Ordered by next_increment_date ascending.
-
-    Response shape per item:
-      {
-        id, employee_id, first_name, last_name,
-        department_name, position, salary, salary_currency,
-        last_increment_date, next_increment_date,
-        days_until_increment   (0 = today, negative should not appear)
-      }
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        try:
-            days = int(request.query_params.get('days', 30))
-        except (ValueError, TypeError):
-            days = 30
+        days = int(request.query_params.get('days', 30))
+        today    = timezone.localdate()
+        deadline = today + timezone.timedelta(days=days)
 
-        today    = date.today()
-        deadline = today + timedelta(days=days)
-
-        qs = (
+        employees = (
             _employee_qs(request.user)
+            .filter(status='active')
             .exclude(next_increment_date__isnull=True)
             .filter(next_increment_date__gte=today, next_increment_date__lte=deadline)
             .order_by('next_increment_date')
+            .values(
+                'id', 'employee_id', 'first_name', 'last_name',
+                'position', 'salary', 'salary_currency',
+                'last_increment_date', 'increment_cycle_months',
+                'next_increment_date',
+            )
         )
 
-        result = []
-        for emp in qs:
-            days_until = (emp.next_increment_date - today).days
-            result.append({
-                'id':                   emp.id,
-                'employee_id':          emp.employee_id,
-                'first_name':           emp.first_name,
-                'last_name':            emp.last_name,
-                'department_name':      emp.department.name if emp.department else None,
-                'position':             emp.position,
-                'salary':               str(emp.salary),
-                'salary_currency':      emp.salary_currency,
-                'last_increment_date':  str(emp.last_increment_date) if emp.last_increment_date else None,
-                'increment_cycle_months': emp.increment_cycle_months,
-                'next_increment_date':  str(emp.next_increment_date),
+        data = []
+        for emp in employees:
+            days_until = (emp['next_increment_date'] - today).days
+            data.append({
+                **emp,
+                'last_increment_date':  str(emp['last_increment_date']) if emp['last_increment_date'] else None,
+                'increment_cycle_months': emp['increment_cycle_months'],
+                'next_increment_date':  str(emp['next_increment_date']),
                 'days_until_increment': days_until,
             })
 
-        return Response(result)
+        return Response(data)
