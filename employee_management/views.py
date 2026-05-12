@@ -335,18 +335,26 @@ class SalaryIncrementHistoryView(APIView):
         next_date = request.data.get('next_increment_date') or None
         notes = request.data.get('notes', '')
 
+        # Parse cycle to int once — avoids string/int mismatch on the model's
+        # PositiveSmallIntegerField and in the choices validator.
+        cycle_int = int(cycle) if cycle not in (None, '') else None
+
         with transaction.atomic():
             # Update the employee's salary and increment tracking fields
             employee.salary = new_salary
             employee.last_increment_date = increment_date
-            if cycle is not None:
-                employee.increment_cycle_months = int(cycle) if cycle != '' else None
+            if cycle_int is not None:
+                employee.increment_cycle_months = cycle_int
             if next_date:
                 employee.next_increment_date = next_date
             employee.save(update_fields=[
                 'salary', 'last_increment_date',
                 'increment_cycle_months', 'next_increment_date', 'updated_at',
             ])
+
+            # Reload from DB so that Employee.save()'s _compute_next_increment_date()
+            # result is reflected in the log record (avoids stale in-memory value).
+            employee.refresh_from_db()
 
             log = SalaryIncrementHistory.objects.create(
                 employee=employee,
@@ -355,8 +363,8 @@ class SalaryIncrementHistoryView(APIView):
                 new_salary=new_salary,
                 increment_amount=increment_amount,
                 increment_percentage=increment_percentage,
-                increment_cycle_months=int(cycle) if cycle not in (None, '') else None,
-                next_increment_date=next_date or None,
+                increment_cycle_months=cycle_int,
+                next_increment_date=employee.next_increment_date,  # use computed value
                 notes=notes,
                 created_by=request.user,
             )
