@@ -5,13 +5,14 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.db.models import Q
 from django.utils import timezone
-from .models import LeaveType, Allowance, Deduction, Holiday, Announcement
+from .models import LeaveType, Allowance, Deduction, Holiday, Announcement, JobTitle
 from .serializers import (
     LeaveTypeSerializer, 
     AllowanceSerializer, 
     DeductionSerializer, 
     HolidaySerializer, 
-    AnnouncementSerializer
+    AnnouncementSerializer,
+    JobTitleSerializer,
 )
 
 
@@ -271,4 +272,42 @@ class AnnouncementViewSet(viewsets.ModelViewSet):
             '-is_pinned', '-date', '-created_at'
         )[:4]
         serializer = self.get_serializer(announcements, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+class JobTitleViewSet(viewsets.ModelViewSet):
+    """ViewSet for Job Title CRUD operations"""
+    queryset = JobTitle.objects.all()
+    serializer_class = JobTitleSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.role == 'SUPER_ADMIN':
+            queryset = JobTitle.objects.all()
+        else:
+            admin = _get_admin_owner(user)
+            if admin is None:
+                return JobTitle.objects.none()
+            queryset = JobTitle.objects.filter(admin_owner=admin)
+
+        is_active = self.request.query_params.get('is_active', None)
+        if is_active is not None:
+            queryset = queryset.filter(is_active=is_active.lower() == 'true')
+
+        search = self.request.query_params.get('search', None)
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search) | Q(description__icontains=search)
+            )
+        return queryset
+
+    def perform_create(self, serializer):
+        admin = _get_admin_owner(self.request.user)
+        serializer.save(admin_owner=admin)
+
+    @action(detail=False, methods=['get'])
+    def active(self, request):
+        """Return only active job titles"""
+        titles = self.get_queryset().filter(is_active=True)
+        serializer = self.get_serializer(titles, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)

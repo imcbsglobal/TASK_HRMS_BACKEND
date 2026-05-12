@@ -297,6 +297,47 @@ class Deduction(models.Model):
     def month_display(self):
         return dict(self.MONTH_CHOICES).get(self.month, '')
 
+class JobTitle(models.Model):
+    """Model to store job titles for employees"""
+
+    name = models.CharField(
+        max_length=150,
+        help_text="Job title name (e.g., Software Engineer, HR Manager)"
+    )
+    description = models.TextField(
+        blank=True,
+        default="",
+        help_text="Optional description of the job title"
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Whether this job title is currently active"
+    )
+
+    # ── Tenant isolation ──────────────────────────────────────────────────────
+    admin_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='job_titles',
+        limit_choices_to={'role': 'ADMIN'},
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'master_job_titles'
+        ordering = ['name']
+        verbose_name = 'Job Title'
+        verbose_name_plural = 'Job Titles'
+        unique_together = ['name', 'admin_owner']
+
+    def __str__(self):
+        return self.name
+
+
 class Announcement(models.Model):
     """Model to store HR announcements shown on the dashboard"""
 

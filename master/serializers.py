@@ -1,6 +1,6 @@
 # master/serializers.py
 from rest_framework import serializers
-from .models import LeaveType, Allowance, Deduction, Holiday, Announcement
+from .models import LeaveType, Allowance, Deduction, Holiday, Announcement, JobTitle
 
 
 class AnnouncementSerializer(serializers.ModelSerializer):
@@ -147,4 +147,18 @@ class DeductionSerializer(serializers.ModelSerializer):
             'last_name': obj.employee.last_name,
             'email': obj.employee.email,
             'employee_id': obj.employee.employee_id,
+        }
+
+class JobTitleSerializer(serializers.ModelSerializer):
+    """Serializer for JobTitle model"""
+
+    class Meta:
+        model = JobTitle
+        fields = [
+            'id', 'name', 'description', 'is_active',
+            'created_at', 'updated_at', 'admin_owner',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
         }
