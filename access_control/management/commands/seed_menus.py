@@ -83,6 +83,14 @@ class Command(BaseCommand):
                     },
                 ]
             },
+            {
+                'name': 'Increment Log',
+                'slug': 'increment-log',
+                'icon': '📈',
+                'route': '/increment-log',
+                'order': 7,
+                'children': []
+            },
             # 7. User Management — parent with 2 children
             {
                 'name': 'User Management',
@@ -157,6 +165,13 @@ class Command(BaseCommand):
                         'route': '/master/announcements',
                         'order': 6
                     },
+                    {
+                        'name': 'Job Title',
+                        'slug': 'job-title',
+                        'icon': '🧑‍💼',
+                        'route': '/master/job-title',
+                        'order': 7
+                    },
                 ]
             },
             # 9. WhatsApp Config — direct route, no children
@@ -227,6 +242,7 @@ class Command(BaseCommand):
         self.stdout.write('  • /offboarding')
         self.stdout.write('  • /attendance/admin')
         self.stdout.write('  • /attendance/user')
+        self.stdout.write('  • /increment-log')
         self.stdout.write('  • /user-management/user-list')
         self.stdout.write('  • /user-management/user-control')
         self.stdout.write('  • /master/department')
@@ -235,5 +251,6 @@ class Command(BaseCommand):
         self.stdout.write('  • /master/deduction')
         self.stdout.write('  • /master/holiday')
         self.stdout.write('  • /master/announcements')
+        self.stdout.write('  • /master/job-title')
         self.stdout.write('  • /whatsapp-config')
         self.stdout.write('  • /company-settings')
