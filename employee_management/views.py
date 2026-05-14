@@ -1,3 +1,4 @@
+from datetime import date as date_type
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -289,11 +290,11 @@ class SalaryIncrementHistoryView(APIView):
 
         Expected body:
           {
-            "increment_date":       "2025-04-01",
-            "new_salary":           75000,
-            "increment_cycle_months": 12,   (optional)
-            "next_increment_date":  "2026-04-01",  (optional)
-            "notes":                "Annual revision"  (optional)
+            "increment_date":         "2025-04-01",
+            "new_salary":             75000,
+            "increment_cycle_months": 12,          (optional)
+            "next_increment_date":    "2026-04-01", (optional)
+            "notes":                  "Annual revision" (optional)
           }
         """
         if request.user.role == 'USER':
@@ -332,33 +333,68 @@ class SalaryIncrementHistoryView(APIView):
             ).quantize(Decimal('0.01'))
 
         cycle = request.data.get('increment_cycle_months')
-        next_date = request.data.get('next_increment_date') or None
+        next_date_raw = request.data.get('next_increment_date') or None
         notes = request.data.get('notes', '')
 
-        # Parse cycle to int once — avoids string/int mismatch on the model's
-        # PositiveSmallIntegerField and in the choices validator.
+        # Parse cycle to int — avoids string/int mismatch on PositiveSmallIntegerField.
         cycle_int = int(cycle) if cycle not in (None, '') else None
 
+        # ✅ FIX: Convert date strings → real date objects BEFORE assigning to the model.
+        # The model's save() calls _compute_next_increment_date() which does:
+        #   self.last_increment_date + relativedelta(months=...)
+        # That raises "TypeError: can only concatenate str to str" when the field
+        # holds a raw string instead of a datetime.date instance.
+        try:
+            increment_date_obj = (
+                date_type.fromisoformat(increment_date)
+                if isinstance(increment_date, str)
+                else increment_date
+            )
+        except ValueError:
+            return Response(
+                {"error": f"Invalid increment_date '{increment_date}'. Expected YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        next_date_obj = None
+        if next_date_raw:
+            try:
+                next_date_obj = (
+                    date_type.fromisoformat(next_date_raw)
+                    if isinstance(next_date_raw, str)
+                    else next_date_raw
+                )
+            except ValueError:
+                return Response(
+                    {"error": f"Invalid next_increment_date '{next_date_raw}'. Expected YYYY-MM-DD."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         with transaction.atomic():
-            # Update the employee's salary and increment tracking fields
             employee.salary = new_salary
-            employee.last_increment_date = increment_date
+            employee.last_increment_date = increment_date_obj  # real date object, not string
+
+            # Build update_fields dynamically — never force-write NULL into constrained
+            # columns when the client didn't supply them.
+            update_fields = ['salary', 'last_increment_date', 'updated_at']
+
             if cycle_int is not None:
                 employee.increment_cycle_months = cycle_int
-            if next_date:
-                employee.next_increment_date = next_date
-            employee.save(update_fields=[
-                'salary', 'last_increment_date',
-                'increment_cycle_months', 'next_increment_date', 'updated_at',
-            ])
+                update_fields.append('increment_cycle_months')
 
-            # Reload from DB so that Employee.save()'s _compute_next_increment_date()
-            # result is reflected in the log record (avoids stale in-memory value).
+            if next_date_obj is not None:
+                employee.next_increment_date = next_date_obj  # real date object
+                update_fields.append('next_increment_date')
+
+            employee.save(update_fields=update_fields)
+
+            # Reload from DB so the model's _compute_next_increment_date() result
+            # is reflected in the log (avoids stale in-memory value).
             employee.refresh_from_db()
 
             log = SalaryIncrementHistory.objects.create(
                 employee=employee,
-                increment_date=increment_date,
+                increment_date=increment_date_obj,
                 old_salary=old_salary,
                 new_salary=new_salary,
                 increment_amount=increment_amount,

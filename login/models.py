@@ -110,3 +110,31 @@ class User(AbstractBaseUser, PermissionsMixin):
     @property
     def full_name(self):
         return f"{self.first_name} {self.last_name}".strip() or self.username
+
+
+class CompanySettings(models.Model):
+    owner = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name='company_settings',
+        limit_choices_to={'role': 'ADMIN'},
+    )
+    name = models.CharField(max_length=255)
+    tagline = models.CharField(max_length=255, blank=True, default='')
+    email = models.EmailField(blank=True, default='')
+    phone = models.CharField(max_length=50, blank=True, default='')
+    website = models.URLField(blank=True, default='')
+    address = models.TextField(blank=True, default='')
+    logo = models.TextField(blank=True, default='')
+    primaryColor = models.CharField(max_length=20, default='#6d3ef6')
+    currency = models.CharField(max_length=10, default='USD')
+    timezone = models.CharField(max_length=64, default='UTC')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Company Settings'
+        verbose_name_plural = 'Company Settings'
+
+    def __str__(self):
+        return f"{self.owner.client_id or self.owner.username} - {self.name}"

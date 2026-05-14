@@ -22,6 +22,7 @@ import base64
 import os
 import tempfile
 import colorsys
+from PIL import Image
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -99,14 +100,17 @@ def resolve_logo(logo_value) -> str | None:
     if isinstance(logo_value, str) and logo_value.startswith("data:image"):
         try:
             header, b64data = logo_value.split(",", 1)
-            ext = "png"
-            if "jpeg" in header or "jpg" in header:
-                ext = "jpg"
-            elif "svg" in header:
+            if "svg" in header:
                 return None  # ReportLab can't render SVG directly
             raw = base64.b64decode(b64data)
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}")
-            tmp.write(raw)
+
+            # Browser uploads are compressed to WebP in the frontend; convert
+            # everything to PNG so ReportLab can draw it reliably.
+            image = Image.open(BytesIO(raw))
+            if image.mode not in ("RGB", "RGBA"):
+                image = image.convert("RGBA")
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+            image.save(tmp, format="PNG")
             tmp.close()
             return tmp.name
         except Exception:
@@ -224,7 +228,7 @@ def draw_header_text(c_obj, pal, company, left_x, right_x):
 def draw_footer(c_obj, pal, company_name, candidate_name):
     c_obj.setFillColor(colors.white)
     c_obj.setFont("Helvetica", 7.5)
-    footer = f"{company_name}  ·  Confidential  ·  Prepared for {candidate_name}"
+    footer = f"{company_name}  -  Confidential  -  Prepared for {candidate_name}"
     c_obj.drawCentredString(PAGE_W / 2, 0.42 * cm, footer)
 
 
@@ -301,9 +305,9 @@ def draw_details_table(c_obj, pal, rows, x, y, col1_w=4.2 * cm, col2_w=11 * cm, 
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Main generator
+# Legacy generator
 # ─────────────────────────────────────────────────────────────────────────────
-def generate_offer_letter_pdf(offer, candidate, company: dict = None):
+def _legacy_generate_offer_letter_pdf(offer, candidate, company: dict = None):
     """
     Generate a beautiful offer letter PDF.
 
@@ -329,6 +333,7 @@ def generate_offer_letter_pdf(offer, candidate, company: dict = None):
         company = {}
 
     company_name  = company.get("name")  or getattr(offer, "company_name", None) or "Company"
+    company = {**company, "name": company_name}
     primary_color = company.get("primaryColor") or "#0D1B2A"
     logo_path     = resolve_logo(company.get("logo"))
 
@@ -431,11 +436,11 @@ def generate_offer_letter_pdf(offer, candidate, company: dict = None):
         c.roundRect(LEFT_X, cursor - info_h, CONTENT_W, info_h, 4, fill=0, stroke=1)
 
         info_parts = []
-        if addr:    info_parts.append(f"📍 {addr}")
-        if website: info_parts.append(f"🌐 {website}")
+        if addr:    info_parts.append(f"Location: {addr}")
+        if website: info_parts.append(f"Website: {website}")
         c.setFont("Helvetica", 7.5)
         c.setFillColor(pal["muted"])
-        c.drawCentredString(LEFT_X + CONTENT_W / 2, cursor - info_h + 0.24 * cm, "  ·  ".join(info_parts))
+        c.drawCentredString(LEFT_X + CONTENT_W / 2, cursor - info_h + 0.24 * cm, "  -  ".join(info_parts))
         cursor -= info_h + 0.55 * cm
 
     # ── Terms & Conditions ────────────────────────────────────────────────────
@@ -524,6 +529,285 @@ def generate_offer_letter_pdf(offer, candidate, company: dict = None):
     c.save()
 
     # Cleanup temp logo file if created
+    if logo_path and logo_path.startswith(tempfile.gettempdir()):
+        try:
+            os.unlink(logo_path)
+        except Exception:
+            pass
+
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+    return pdf_bytes
+
+
+def _bw_palette():
+    return {
+        "black": colors.black,
+        "charcoal": colors.HexColor("#2B2B2B"),
+        "dark_gray": colors.HexColor("#5E5E5E"),
+        "mid_gray": colors.HexColor("#9A9A9A"),
+        "line": colors.HexColor("#D8D8D8"),
+        "pale": colors.HexColor("#F2F2F2"),
+        "white": colors.white,
+    }
+
+
+def _draw_polygon(c_obj, points, fill_color):
+    c_obj.setFillColor(fill_color)
+    path = c_obj.beginPath()
+    path.moveTo(*points[0])
+    for point in points[1:]:
+        path.lineTo(*point)
+    path.close()
+    c_obj.drawPath(path, fill=1, stroke=0)
+
+
+def _draw_bw_chrome(c_obj, pal):
+    margin = 1.05 * cm
+
+    c_obj.setFillColor(pal["white"])
+    c_obj.rect(0, 0, PAGE_W, PAGE_H, fill=1, stroke=0)
+
+    c_obj.setStrokeColor(colors.HexColor("#C8CDD2"))
+    c_obj.setLineWidth(1)
+    c_obj.roundRect(
+        margin,
+        0.7 * cm,
+        PAGE_W - margin * 2,
+        PAGE_H - 1.4 * cm,
+        10,
+        fill=0,
+        stroke=1,
+    )
+
+    # Light paper folds around the page, like the reference but monochrome.
+    facets = [
+        [(margin, PAGE_H - 0.7 * cm), (PAGE_W - margin, PAGE_H - 0.7 * cm), (PAGE_W - 3.5 * cm, PAGE_H - 3.8 * cm), (3.2 * cm, PAGE_H - 3.8 * cm)],
+        [(margin, 0.7 * cm), (3.6 * cm, 0.7 * cm), (margin, 3.2 * cm)],
+        [(PAGE_W - margin, 0.7 * cm), (PAGE_W - 4.2 * cm, 0.7 * cm), (PAGE_W - margin, 3.7 * cm)],
+        [(PAGE_W - margin, PAGE_H - 0.7 * cm), (PAGE_W - margin, PAGE_H - 4.2 * cm), (PAGE_W - 3.3 * cm, PAGE_H - 0.7 * cm)],
+    ]
+    for facet in facets:
+        _draw_polygon(c_obj, facet, pal["pale"])
+
+    _draw_polygon(c_obj, [(margin, PAGE_H - 0.7 * cm), (4.1 * cm, PAGE_H - 0.7 * cm), (2.4 * cm, PAGE_H - 7.2 * cm), (margin, PAGE_H - 9.1 * cm)], pal["black"])
+    _draw_polygon(c_obj, [(margin, PAGE_H - 2.0 * cm), (3.0 * cm, PAGE_H - 1.0 * cm), (1.4 * cm, PAGE_H - 5.0 * cm), (margin, PAGE_H - 6.0 * cm)], pal["charcoal"])
+    _draw_polygon(c_obj, [(2.6 * cm, PAGE_H - 1.0 * cm), (3.25 * cm, PAGE_H - 1.0 * cm), (1.6 * cm, PAGE_H - 4.2 * cm), (1.15 * cm, PAGE_H - 4.2 * cm)], pal["mid_gray"])
+
+    _draw_polygon(c_obj, [(PAGE_W - margin, 0.7 * cm), (PAGE_W - 4.2 * cm, 0.7 * cm), (PAGE_W - 2.3 * cm, 6.3 * cm), (PAGE_W - margin, 8.1 * cm)], pal["black"])
+    _draw_polygon(c_obj, [(PAGE_W - 2.15 * cm, 1.5 * cm), (PAGE_W - 3.0 * cm, 1.5 * cm), (PAGE_W - 1.25 * cm, 4.8 * cm), (PAGE_W - margin, 4.8 * cm)], pal["mid_gray"])
+    _draw_polygon(c_obj, [(PAGE_W - 3.45 * cm, 2.8 * cm), (PAGE_W - 2.85 * cm, 2.8 * cm), (PAGE_W - 1.5 * cm, 6.4 * cm), (PAGE_W - 2.1 * cm, 6.4 * cm)], pal["charcoal"])
+
+    c_obj.setStrokeColor(pal["dark_gray"])
+    c_obj.setLineWidth(0.7)
+    for x, y in [
+        (2.45 * cm, PAGE_H - 1.55 * cm),
+        (2.8 * cm, PAGE_H - 2.4 * cm),
+        (2.1 * cm, PAGE_H - 8.0 * cm),
+        (PAGE_W - 3.0 * cm, 2.1 * cm),
+        (PAGE_W - 2.35 * cm, 6.4 * cm),
+    ]:
+        c_obj.line(x, y, x + 0.35 * cm, y + 1.0 * cm)
+
+
+def _draw_letterhead(c_obj, company, logo_path, pal, center_x, top_y):
+    logo_size = 1.55 * cm
+    name = company.get("name") or "Company"
+    address = company.get("address") or ""
+
+    if logo_path:
+        try:
+            c_obj.drawImage(
+                logo_path,
+                center_x - 4.05 * cm,
+                top_y - logo_size + 0.08 * cm,
+                width=logo_size,
+                height=logo_size,
+                preserveAspectRatio=True,
+                mask="auto",
+            )
+        except Exception:
+            logo_path = None
+
+    if not logo_path:
+        c_obj.setStrokeColor(pal["black"])
+        c_obj.setLineWidth(3)
+        c_obj.circle(center_x - 3.25 * cm, top_y - 0.65 * cm, 0.55 * cm, fill=0, stroke=1)
+        c_obj.setFont("Helvetica-Bold", 15)
+        c_obj.setFillColor(pal["black"])
+        c_obj.drawCentredString(center_x - 3.25 * cm, top_y - 0.82 * cm, name[:1].upper())
+
+    c_obj.setFillColor(pal["black"])
+    c_obj.setFont("Helvetica-Bold", 16)
+    c_obj.drawString(center_x - 2.3 * cm, top_y - 0.47 * cm, name.upper())
+
+    if address:
+        c_obj.setFillColor(pal["charcoal"])
+        c_obj.setFont("Helvetica", 8)
+        c_obj.drawString(center_x - 2.3 * cm, top_y - 0.88 * cm, address)
+
+
+def _draw_footer_contacts(c_obj, company, pal, left_x, right_x):
+    y = 2.05 * cm
+    parts = []
+    if company.get("phone"):
+        parts.append(company["phone"])
+    if company.get("email"):
+        parts.append(company["email"])
+    if company.get("website"):
+        parts.append(company["website"])
+
+    if not parts:
+        return
+
+    usable_w = right_x - left_x
+    gap = usable_w / len(parts)
+    c_obj.setFillColor(pal["black"])
+    c_obj.setFont("Helvetica", 7.5)
+    for index, part in enumerate(parts):
+        x = left_x + gap * index + gap / 2
+        c_obj.circle(x - 0.32 * cm, y + 0.03 * cm, 0.10 * cm, fill=1, stroke=0)
+        c_obj.drawCentredString(x + 0.45 * cm, y, part)
+
+
+def generate_offer_letter_pdf(offer, candidate, company: dict = None):
+    """
+    Generate a black-and-white job offer letter PDF using the existing data.
+    This definition intentionally overrides the earlier template only.
+    """
+    if company is None:
+        company = {}
+
+    company_name = company.get("name") or getattr(offer, "company_name", None) or "Company"
+    company = {**company, "name": company_name}
+    logo_path = resolve_logo(company.get("logo"))
+    pal = _bw_palette()
+
+    offer_date_str = offer.offer_date.strftime("%B %d, %Y") if getattr(offer, "offer_date", None) else ""
+    joining_date_str = offer.joining_date.strftime("%B %d, %Y") if getattr(offer, "joining_date", None) else "To be confirmed"
+
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    c.setTitle(f"Offer Letter - {candidate.name}")
+
+    left_x = 3.05 * cm
+    right_x = PAGE_W - 2.35 * cm
+    content_w = right_x - left_x
+
+    _draw_bw_chrome(c, pal)
+    _draw_letterhead(c, company, logo_path, pal, PAGE_W / 2, PAGE_H - 3.0 * cm)
+
+    c.setStrokeColor(pal["black"])
+    c.setLineWidth(1.5)
+    c.line(left_x - 0.65 * cm, PAGE_H - 5.35 * cm, right_x, PAGE_H - 5.35 * cm)
+
+    c.setFillColor(pal["black"])
+    c.setFont("Helvetica-Bold", 19)
+    c.drawCentredString(PAGE_W / 2, PAGE_H - 6.25 * cm, "JOB OFFER LETTER")
+
+    cursor = PAGE_H - 7.05 * cm
+    c.setFont("Helvetica-Bold", 8.5)
+    c.drawString(left_x, cursor, "To:")
+    c.setFont("Helvetica", 8.5)
+    c.drawString(left_x, cursor - 0.36 * cm, candidate.name)
+    candidate_location = getattr(candidate, "location", None)
+    if candidate_location:
+        c.drawString(left_x, cursor - 0.72 * cm, candidate_location)
+
+    c.setFont("Helvetica", 8.5)
+    c.drawRightString(right_x, cursor, offer_date_str)
+    cursor -= 1.55 * cm
+
+    body_style = ParagraphStyle(
+        "BWBody",
+        fontName="Helvetica",
+        fontSize=8.7,
+        textColor=pal["black"],
+        leading=12.2,
+        alignment=TA_JUSTIFY,
+    )
+
+    c.setFont("Helvetica", 8.7)
+    c.drawString(left_x, cursor, f"Dear {candidate.name},")
+    cursor -= 0.55 * cm
+
+    dept_clause = f" in the {offer.department} department" if getattr(offer, "department", None) else ""
+    intro = (
+        f"We are pleased to extend an offer for the position of <b>{getattr(offer, 'position', '')}</b>"
+        f"{dept_clause} at <b>{company_name}</b>. Your skills, communication ability, and dedication "
+        "to people development will make a strong contribution to our team."
+    )
+    h = draw_paragraph(c, intro, left_x, cursor, content_w, body_style)
+    cursor -= h + 0.45 * cm
+
+    c.setFont("Helvetica", 8.7)
+    c.setFillColor(pal["black"])
+    c.drawString(left_x, cursor, "Offer Details:")
+    cursor -= 0.36 * cm
+
+    currency = company.get("currency", "")
+    salary_value = getattr(offer, "salary", "") or "Based on company salary structure and internal guidelines"
+    salary_display = f"{currency} {salary_value}".strip() if currency and getattr(offer, "salary", "") else salary_value
+    employment_type = "Full-Time"
+    benefits = getattr(offer, "additional_benefits", None) or "Health coverage, paid leave, and employee development programs"
+    details = [
+        ("Position", getattr(offer, "position", "") or "To be confirmed"),
+        ("Start Date", joining_date_str),
+        ("Work Location", getattr(offer, "work_location", None) or "Corporate Headquarters"),
+        ("Employment Type", employment_type),
+        ("Compensation", salary_display),
+        ("Benefits", benefits),
+    ]
+
+    bullet_style = ParagraphStyle(
+        "BWBullet",
+        fontName="Helvetica",
+        fontSize=8.4,
+        textColor=pal["black"],
+        leading=11,
+        leftIndent=0.3 * cm,
+        firstLineIndent=-0.2 * cm,
+    )
+    for label, value in details:
+        text = f"<bullet>&bull;</bullet><b>{label}:</b> {value}"
+        p = Paragraph(text, bullet_style, bulletText="*")
+        _, h = p.wrapOn(c, content_w, 999)
+        p.drawOn(c, left_x + 0.2 * cm, cursor - h)
+        cursor -= h
+
+    cursor -= 0.45 * cm
+    terms = (
+        "This offer is contingent upon the completion of onboarding documentation in accordance "
+        "with company policy. Please confirm your acceptance by replying to this letter within "
+        "7 days of receipt."
+    )
+    h = draw_paragraph(c, terms, left_x, cursor, content_w, body_style)
+    cursor -= h + 0.45 * cm
+
+    closing = (
+        "We look forward to welcoming you and supporting your growth within our organization."
+    )
+    h = draw_paragraph(c, closing, left_x, cursor, content_w, body_style)
+    cursor -= h + 0.75 * cm
+
+    c.setFont("Helvetica-Bold", 8.7)
+    c.drawString(left_x, cursor, "Warm regards,")
+    cursor -= 1.15 * cm
+
+    hr_name = getattr(offer, "hr_name", None) or "Authorized Signatory"
+    hr_desig = getattr(offer, "hr_designation", None) or "HR Manager"
+    c.setStrokeColor(pal["black"])
+    c.setLineWidth(0.7)
+    c.line(left_x, cursor + 0.35 * cm, left_x + 3.1 * cm, cursor + 0.35 * cm)
+    c.setFont("Helvetica", 8.5)
+    c.drawString(left_x, cursor, hr_name)
+    c.drawString(left_x, cursor - 0.36 * cm, hr_desig)
+
+    _draw_footer_contacts(c, company, pal, left_x, right_x)
+
+    c.showPage()
+    c.save()
+
     if logo_path and logo_path.startswith(tempfile.gettempdir()):
         try:
             os.unlink(logo_path)

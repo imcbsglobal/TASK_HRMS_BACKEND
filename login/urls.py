@@ -8,6 +8,7 @@ from .views import (
     UserUpdateView,
     UserDeleteView,
     LicenseCustomersProxyView,
+    CompanySettingsCurrentView,
 )
 from rest_framework_simplejwt.views import TokenRefreshView
 
@@ -26,4 +27,7 @@ urlpatterns = [
 
     # 🔑 License Proxy
     path('license/customers/',          LicenseCustomersProxyView.as_view(), name='license_customers'),
+
+    # Company Settings
+    path('company-settings/current/',   CompanySettingsCurrentView.as_view(), name='company_settings_current'),
 ]

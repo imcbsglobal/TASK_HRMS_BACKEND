@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 
 from .models import Candidate, CandidateRating, OfferLetter, PipelineStage
+from login.models import CompanySettings
 from .serializers import (
     CandidateSerializer, CandidateRatingSerializer,
     OfferLetterSerializer, PipelineStageSerializer,
@@ -41,6 +42,37 @@ def _candidate_qs(user):
     if admin is None:
         return Candidate.objects.none()
     return Candidate.objects.filter(admin_owner=admin)
+
+def _company_settings_dict(user):
+    admin = _get_admin_owner(user)
+    if admin is None:
+        return {}
+
+    settings_obj = CompanySettings.objects.filter(owner=admin).first()
+    if not settings_obj:
+        return {
+            "name": admin.company_name or "Company",
+            "tagline": "",
+            "email": "",
+            "phone": "",
+            "website": "",
+            "address": "",
+            "logo": "",
+            "primaryColor": "#6d3ef6",
+            "currency": "USD",
+        }
+
+    return {
+        "name": settings_obj.name,
+        "tagline": settings_obj.tagline,
+        "email": settings_obj.email,
+        "phone": settings_obj.phone,
+        "website": settings_obj.website,
+        "address": settings_obj.address,
+        "logo": settings_obj.logo,
+        "primaryColor": settings_obj.primaryColor,
+        "currency": settings_obj.currency,
+    }
 
 # ─────────────────────────────────────────────────────────────
 #  Fixed (built-in) stage keys — these cannot be deleted
@@ -268,7 +300,12 @@ class OfferLetterView(APIView):
             offer = OfferLetter(candidate=candidate)
             created = True
 
-        serializer = OfferLetterSerializer(offer, data=request.data, partial=True)
+        data = request.data.copy()
+        company = _company_settings_dict(request.user)
+        if company.get("name") and not data.get("company_name"):
+            data["company_name"] = company["name"]
+
+        serializer = OfferLetterSerializer(offer, data=data, partial=True)
         if serializer.is_valid():
             serializer.save(candidate=candidate)
             return Response(serializer.data, status=201 if created else 200)
@@ -296,7 +333,11 @@ class DownloadOfferLetterView(APIView):
             )
 
         try:
-            pdf_bytes = generate_offer_letter_pdf(offer, candidate)
+            pdf_bytes = generate_offer_letter_pdf(
+                offer,
+                candidate,
+                _company_settings_dict(request.user),
+            )
         except Exception as e:
             return Response({"error": f"PDF generation failed: {str(e)}"}, status=500)
 
@@ -330,18 +371,20 @@ class SendOfferLetterView(APIView):
             )
 
         try:
-            pdf_bytes = generate_offer_letter_pdf(offer, candidate)
+            company = _company_settings_dict(request.user)
+            company_name = company.get("name") or offer.company_name or "Company"
+            pdf_bytes = generate_offer_letter_pdf(offer, candidate, company)
 
             email = EmailMessage(
-                subject=f"Offer Letter – {offer.position} at {offer.company_name}",
+                subject=f"Offer Letter - {offer.position} at {company_name}",
                 body=(
                     f"Dear {candidate.name},\n\n"
                     f"Please find attached your offer letter for the position of {offer.position} "
-                    f"at {offer.company_name}.\n\n"
+                    f"at {company_name}.\n\n"
                     f"We look forward to welcoming you to our team.\n\n"
                     f"Best regards,\n"
                     f"{offer.hr_name or 'HR Team'}\n"
-                    f"{offer.company_name}"
+                    f"{company_name}"
                 ),
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 to=[candidate.email],

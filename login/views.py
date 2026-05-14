@@ -11,9 +11,19 @@ from .serializers import (
     UserCreateSerializer,
     UserUpdateSerializer,
     LoginSerializer,
+    CompanySettingsSerializer,
 )
+from .models import CompanySettings
 
 User = get_user_model()
+
+
+def get_tenant_admin(user):
+    if user.role == 'ADMIN':
+        return user
+    if user.role == 'USER':
+        return user.admin_owner
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -87,13 +97,19 @@ class LoginView(APIView):
         # ── Issue tokens ───────────────────────────────────────────────────
         refresh         = RefreshToken.for_user(user)
         normalized_role = user.role.lower()
+        tenant_admin    = get_tenant_admin(user)
+        setup_completed = (
+            CompanySettings.objects.filter(owner=tenant_admin).exists()
+            if tenant_admin else True
+        )
 
         return Response({
             "access":    str(refresh.access_token),
             "refresh":   str(refresh),
             "role":      normalized_role,
             "username":  user.username,
-            "client_id": user.client_id,
+            "client_id": user.client_id if user.role == 'ADMIN' else client_id,
+            "company_setup_completed": setup_completed,
         })
 
 
@@ -324,3 +340,61 @@ class LicenseCustomersProxyView(APIView):
                 {"detail": f"Could not reach license server: {str(e)}"},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
+
+
+# ---------------------------------------------------------------------------
+# Company Settings - GET/PATCH /api/company-settings/current/
+#
+# ADMIN owns one settings record for the client_id.
+# USER reads the settings owned by their admin_owner.
+# ---------------------------------------------------------------------------
+class CompanySettingsCurrentView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tenant_admin = get_tenant_admin(request.user)
+        if not tenant_admin:
+            return Response(
+                {"detail": "Company settings are not available for this account."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        settings_obj = CompanySettings.objects.filter(owner=tenant_admin).first()
+        if not settings_obj:
+            return Response(
+                {
+                    "client_id": tenant_admin.client_id,
+                    "setup_completed": False,
+                    "name": tenant_admin.company_name or "",
+                    "tagline": "",
+                    "email": "",
+                    "phone": "",
+                    "website": "",
+                    "address": "",
+                    "logo": "",
+                    "primaryColor": "#6d3ef6",
+                    "currency": "USD",
+                    "timezone": "UTC",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        serializer = CompanySettingsSerializer(settings_obj)
+        return Response(serializer.data)
+
+    def patch(self, request):
+        if request.user.role != 'ADMIN':
+            return Response(
+                {"detail": "Only admins can update company settings."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        settings_obj, _ = CompanySettings.objects.get_or_create(
+            owner=request.user,
+            defaults={"name": request.user.company_name or request.user.username},
+        )
+        serializer = CompanySettingsSerializer(settings_obj, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save(owner=request.user)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

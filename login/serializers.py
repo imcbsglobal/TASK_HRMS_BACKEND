@@ -1,5 +1,6 @@
 from django.contrib.auth import get_user_model, authenticate
 from rest_framework import serializers
+from .models import CompanySettings
 
 User = get_user_model()
 
@@ -130,3 +131,19 @@ class LoginSerializer(serializers.Serializer):
             raise serializers.ValidationError("Invalid credentials")
         data['user'] = user
         return data
+
+
+class CompanySettingsSerializer(serializers.ModelSerializer):
+    client_id = serializers.CharField(source='owner.client_id', read_only=True)
+    setup_completed = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CompanySettings
+        fields = (
+            'client_id', 'setup_completed',
+            'name', 'tagline', 'email', 'phone', 'website', 'address',
+            'logo', 'primaryColor', 'currency', 'timezone',
+        )
+
+    def get_setup_completed(self, obj):
+        return bool(obj and obj.name)
