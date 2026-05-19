@@ -77,7 +77,7 @@ def _company_settings_dict(user):
 # ─────────────────────────────────────────────────────────────
 #  Fixed (built-in) stage keys — these cannot be deleted
 # ─────────────────────────────────────────────────────────────
-FIXED_STAGES = {"uploaded", "selected", "rejected"}
+FIXED_STAGES = {"uploaded", "shortlisted", "cv_rejected", "selected", "rejected"}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -96,7 +96,6 @@ class PipelineStageListView(APIView):
         return Response(PipelineStageSerializer(stages, many=True).data)
 
     def post(self, request):
-        # Prevent overriding fixed stages
         key = request.data.get("key", "")
         if key in FIXED_STAGES:
             return Response(
@@ -140,15 +139,13 @@ class PipelineStageDetailView(APIView):
         if not stage:
             return Response({"error": "Stage not found"}, status=404)
 
-        # Move any candidates still in this stage back to 'uploaded'
-        _candidate_qs(request.user).filter(status=stage.key).update(status="uploaded")
-
+        _candidate_qs(request.user).filter(status=stage.key).update(status="shortlisted")
         stage.delete()
         return Response({"success": True})
 
 
 # ─────────────────────────────────────────────────────────────
-#  Existing Candidate Views (unchanged logic)
+#  Candidate Views
 # ─────────────────────────────────────────────────────────────
 
 class CandidateUploadView(APIView):
@@ -176,7 +173,7 @@ class CandidateUploadView(APIView):
         serializer = CandidateSerializer(data=data)
         if serializer.is_valid():
             admin = _get_admin_owner(request.user)
-            serializer.save(admin_owner=admin)
+            serializer.save(admin_owner=admin, status="shortlisted")
             return Response(serializer.data)
         return Response(serializer.errors, status=400)
 
@@ -195,7 +192,6 @@ class CandidateStatusUpdateView(APIView):
     def patch(self, request, pk):
         new_status = request.data.get("status")
 
-        # Allow fixed stages and any existing custom stage key
         valid_custom_keys = set(
             _pipeline_stage_qs(request.user).values_list("key", flat=True)
         )
@@ -249,7 +245,7 @@ class CandidateRatingView(APIView):
             candidate = _candidate_qs(request.user).get(id=candidate_id)
         except Candidate.DoesNotExist:
             return Response({"error": "Candidate not found"}, status=404)
-        
+
         rating = CandidateRating.objects.filter(candidate=candidate).first()
         if not rating:
             return Response({})
@@ -269,7 +265,7 @@ class CandidateRatingView(APIView):
 
 
 # ─────────────────────────────────────────────────────────────
-#  Offer Letter Views (unchanged)
+#  Offer Letter Views
 # ─────────────────────────────────────────────────────────────
 
 class OfferLetterView(APIView):
@@ -400,3 +396,113 @@ class SendOfferLetterView(APIView):
 
         except Exception as e:
             return Response({"error": str(e)}, status=500)
+
+
+# ─────────────────────────────────────────────────────────────
+#  Upload CV Page Views
+# ─────────────────────────────────────────────────────────────
+
+class UploadCVListView(APIView):
+    """
+    GET  /HR/upload-cv/  → candidates with status in {uploaded, shortlisted, cv_rejected}
+    POST /HR/upload-cv/  → upload a new CV (creates candidate with status=uploaded)
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    UPLOAD_PAGE_STATUSES = {"uploaded", "shortlisted", "cv_rejected"}
+
+    def get(self, request):
+        qs = _candidate_qs(request.user).filter(
+            status__in=self.UPLOAD_PAGE_STATUSES
+        ).order_by("-created_at")
+        return Response(CandidateSerializer(qs, many=True).data)
+
+    def post(self, request):
+        file = request.FILES.get("cv")
+        if not file:
+            return Response({"error": "CV file is required."}, status=400)
+
+        text = extract_text(file)
+        extracted = extract_fields(text)
+
+        data = {
+            "name": extracted.get("name") or file.name.rsplit(".", 1)[0],
+            "email": extracted.get("email", ""),
+            "phone": extracted.get("phone", ""),
+            "location": extracted.get("location", ""),
+            "role": extracted.get("role", ""),
+            "experience": extracted.get("experience", ""),
+            "education": extracted.get("education", ""),
+            "skills": extracted.get("skills", []),
+            "cv": file,
+        }
+
+        serializer = CandidateSerializer(data=data)
+        if serializer.is_valid():
+            admin = _get_admin_owner(request.user)
+            serializer.save(admin_owner=admin, status="uploaded")
+            return Response(serializer.data, status=201)
+        return Response(serializer.errors, status=400)
+
+
+class UploadCVStatusUpdateView(APIView):
+    """
+    PATCH /HR/upload-cv/<pk>/status/
+    Allowed transitions: uploaded ↔ shortlisted ↔ cv_rejected
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    UPLOAD_PAGE_STATUSES = {"uploaded", "shortlisted", "cv_rejected"}
+
+    def patch(self, request, pk):
+        new_status = request.data.get("status")
+        if new_status not in self.UPLOAD_PAGE_STATUSES:
+            return Response(
+                {"error": f"'{new_status}' is not a valid status for this page. "
+                          f"Allowed: uploaded, shortlisted, cv_rejected."},
+                status=400,
+            )
+
+        try:
+            candidate = _candidate_qs(request.user).get(pk=pk)
+        except Candidate.DoesNotExist:
+            return Response({"error": "Candidate not found."}, status=404)
+
+        if candidate.status not in self.UPLOAD_PAGE_STATUSES:
+            return Response(
+                {"error": "This candidate is already in the interview pipeline "
+                          "and cannot be edited from the Upload CV page."},
+                status=400,
+            )
+
+        candidate.status = new_status
+        candidate.save()
+        return Response(CandidateSerializer(candidate).data)
+
+
+class UploadCVInterviewDateView(APIView):
+    """
+    PATCH /HR/upload-cv/<pk>/interview/
+    Sets or clears the interview date, time, and note for a candidate.
+
+    Body:
+        {
+            "interview_date": "2025-09-15",  # null / omit to clear
+            "interview_time": "10:30",       # optional
+            "interview_note": "Zoom call"    # optional
+        }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, pk):
+        try:
+            candidate = _candidate_qs(request.user).get(pk=pk)
+        except Candidate.DoesNotExist:
+            return Response({"error": "Candidate not found."}, status=404)
+
+        candidate.interview_date = request.data.get("interview_date") or None
+        candidate.interview_time = request.data.get("interview_time", "")
+        candidate.interview_note = request.data.get("interview_note", "")
+        candidate.save()
+
+        return Response(CandidateSerializer(candidate).data)

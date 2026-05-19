@@ -18,4 +18,9 @@ urlpatterns = [
     # Pipeline Stages (company-customisable)
     path("pipeline-stages/", PipelineStageListView.as_view()),
     path("pipeline-stages/<int:pk>/", PipelineStageDetailView.as_view()),
+
+    # Upload CV page
+    path("upload-cv/", UploadCVListView.as_view()),
+    path("upload-cv/<int:pk>/status/", UploadCVStatusUpdateView.as_view()),
+    path("upload-cv/<int:pk>/interview/", UploadCVInterviewDateView.as_view()),  # ← NEW
 ]

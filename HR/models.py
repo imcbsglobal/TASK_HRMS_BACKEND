@@ -80,6 +80,11 @@ class Candidate(models.Model):
         limit_choices_to={'role': 'ADMIN'},
     )
 
+    # ── Interview scheduling ───────────────────────────────────────────────────
+    interview_date = models.DateField(null=True, blank=True)
+    interview_time = models.CharField(max_length=10, blank=True)   # "HH:MM"
+    interview_note = models.TextField(blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
