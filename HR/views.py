@@ -77,7 +77,7 @@ def _company_settings_dict(user):
 # ─────────────────────────────────────────────────────────────
 #  Fixed (built-in) stage keys — these cannot be deleted
 # ─────────────────────────────────────────────────────────────
-FIXED_STAGES = {"uploaded", "shortlisted", "cv_rejected", "selected", "rejected"}
+FIXED_STAGES = {"uploaded", "shortlisted", "cv_rejected", "start_interview", "selected", "rejected"}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -164,6 +164,7 @@ class CandidateUploadView(APIView):
             "email": extracted.get("email", ""),
             "phone": extracted.get("phone", ""),
             "location": extracted.get("location", ""),
+            "role": extracted.get("role", ""),
             "experience": extracted.get("experience", ""),
             "education": extracted.get("education", ""),
             "skills": extracted.get("skills", []),
@@ -409,12 +410,8 @@ class UploadCVListView(APIView):
     """
     permission_classes = [permissions.IsAuthenticated]
 
-    UPLOAD_PAGE_STATUSES = {"uploaded", "shortlisted", "cv_rejected"}
-
     def get(self, request):
-        qs = _candidate_qs(request.user).filter(
-            status__in=self.UPLOAD_PAGE_STATUSES
-        ).order_by("-created_at")
+        qs = _candidate_qs(request.user).order_by("-created_at")
         return Response(CandidateSerializer(qs, many=True).data)
 
     def post(self, request):
