@@ -338,6 +338,7 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
     reviewed_by_name = serializers.CharField(source='reviewed_by.full_name', read_only=True, allow_null=True)
     total_days = serializers.ReadOnlyField()
     leave_type_display = serializers.CharField(source='get_leave_type_display', read_only=True)
+    duration_type_display = serializers.CharField(source='get_duration_type_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     start_date_formatted = serializers.SerializerMethodField()
     end_date_formatted = serializers.SerializerMethodField()
@@ -347,6 +348,7 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'user', 'user_name', 'user_username',
             'leave_type', 'leave_type_display',
+            'duration_type', 'duration_type_display',
             'start_date', 'start_date_formatted',
             'end_date', 'end_date_formatted',
             'reason', 'status', 'status_display',
@@ -376,15 +378,20 @@ class CreateLeaveRequestSerializer(serializers.ModelSerializer):
     """Serializer for creating a new leave request"""
     class Meta:
         model = LeaveRequest
-        fields = ['leave_type', 'start_date', 'end_date', 'reason']
+        fields = ['leave_type', 'duration_type', 'start_date', 'end_date', 'reason']
 
     def validate(self, data):
         start_date = data.get('start_date')
         end_date = data.get('end_date')
+        duration_type = data.get('duration_type', 'full_day')
 
         if start_date and end_date:
             if end_date < start_date:
                 raise serializers.ValidationError("End date cannot be before start date.")
+
+        # Half day only makes sense for a single day
+        if duration_type == 'half_day' and start_date and end_date and start_date != end_date:
+            raise serializers.ValidationError("Half day leave must be for a single day (start date must equal end date).")
 
         user = self.context['request'].user
         if start_date and end_date:

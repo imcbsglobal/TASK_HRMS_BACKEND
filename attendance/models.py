@@ -199,6 +199,10 @@ class LeaveRequest(models.Model):
         ('pending', 'Pending'), ('approved', 'Approved'),
         ('rejected', 'Rejected'), ('cancelled', 'Cancelled'),
     ]
+    DURATION_TYPE_CHOICES = [
+        ('full_day', 'Full Day'),
+        ('half_day', 'Half Day'),
+    ]
 
     # ── Tenant isolation ──────────────────────────────────────────────────────
     admin_owner = models.ForeignKey(
@@ -212,6 +216,12 @@ class LeaveRequest(models.Model):
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='leave_requests')
     leave_type = models.CharField(max_length=20, choices=LEAVE_TYPE_CHOICES, default='casual')
+    duration_type = models.CharField(
+        max_length=10,
+        choices=DURATION_TYPE_CHOICES,
+        default='full_day',
+        help_text="Whether the leave is for a full day or half day.",
+    )
     start_date = models.DateField()
     end_date = models.DateField()
     reason = models.TextField()
@@ -233,7 +243,10 @@ class LeaveRequest(models.Model):
     @property
     def total_days(self):
         if self.start_date and self.end_date:
-            return (self.end_date - self.start_date).days + 1
+            days = (self.end_date - self.start_date).days + 1
+            if self.duration_type == 'half_day':
+                return 0.5
+            return days
         return 0
 
 
