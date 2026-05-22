@@ -103,8 +103,7 @@ class AttendanceSerializer(serializers.ModelSerializer):
 
     def get_break_records(self, obj):
         return BreakRecordSerializer(obj.breaks.all(), many=True).data
-
-
+    
 class BreakRecordSerializer(serializers.ModelSerializer):
     user_name = serializers.SerializerMethodField()
     user_username = serializers.CharField(source='user.username', read_only=True)
