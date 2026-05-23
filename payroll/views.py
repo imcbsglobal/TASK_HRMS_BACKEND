@@ -187,7 +187,16 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
     """
     Central helper for payroll calculation.
     """
-    total_days   = calendar.monthrange(year, month)[1]
+    calendar_days = calendar.monthrange(year, month)[1]
+    
+    from master.models import Holiday
+    holidays_qs = Holiday.objects.filter(date__year=year, date__month=month, is_active=True)
+    if admin_owner:
+        holidays_qs = holidays_qs.filter(admin_owner=admin_owner)
+    holiday_count = holidays_qs.count()
+    
+    total_days = max(1, calendar_days - holiday_count)
+    
     basic_salary = employee.salary
 
     # ── Attendance ────────────────────────────────────────────────────────────
