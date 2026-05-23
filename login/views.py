@@ -5,6 +5,8 @@ from rest_framework              import status, permissions
 from rest_framework.permissions  import IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
+import requests as _req
+import logging
 
 from .serializers import (
     UserSerializer,
@@ -15,7 +17,44 @@ from .serializers import (
 )
 from .models import CompanySettings
 
+logger = logging.getLogger(__name__)
 User = get_user_model()
+
+# ---------------------------------------------------------------------------
+# License status check helper
+# Must be defined at the TOP so LoginView can call it.
+# ---------------------------------------------------------------------------
+_TRELLISCO_LICENSE_API = "https://activate.imcbs.com/mobileapp/api/project/trellisco/"
+
+def _check_license_status(client_id):
+    """
+    Returns (is_active: bool, error_message: str | None).
+    - Blocks login when the client_id is found and status != 'Active'.
+    - Fails OPEN (allows login) only when the license server is unreachable,
+      so a network blip never locks everyone out.
+    - Fails OPEN when the client_id is not in the list (manually-created admins).
+    """
+    try:
+        resp = _req.get(_TRELLISCO_LICENSE_API, timeout=8)
+        resp.raise_for_status()
+        customers = resp.json().get("customers", [])
+        for customer in customers:
+            if customer.get("client_id") == client_id:
+                lic_status = (customer.get("status") or "").strip()
+                if lic_status.lower() == "active":
+                    return True, None
+                customer_name = customer.get("customer_name", client_id)
+                return False, (
+                    f"License for '{customer_name}' is {lic_status}. "
+                    f"Please contact your administrator to activate the license."
+                )
+        # client_id not in license list → fail open
+        return True, None
+    except Exception as exc:
+        # Log the real error so it's visible in Django logs
+        logger.warning("License check failed for %s: %s", client_id, exc)
+        # Fail open — don't lock users out due to a network issue
+        return True, None
 
 
 def get_tenant_admin(user):
@@ -93,6 +132,22 @@ class LoginView(APIView):
                     {"detail": "Invalid Client ID."},
                     status=status.HTTP_401_UNAUTHORIZED,
                 )
+
+        # ── License status check (ADMIN and USER only) ────────────────────
+        # Determine which client_id to check against the license server.
+        # SUPER_ADMIN has no client_id so we skip the check entirely.
+        if user.role in ('ADMIN', 'USER'):
+            check_id = (
+                user.client_id if user.role == 'ADMIN'
+                else (user.admin_owner.client_id if user.admin_owner else None)
+            )
+            if check_id:
+                is_active, license_error = _check_license_status(check_id)
+                if not is_active:
+                    return Response(
+                        {"detail": license_error},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
 
         # ── Issue tokens ───────────────────────────────────────────────────
         refresh         = RefreshToken.for_user(user)
@@ -340,6 +395,274 @@ class LicenseCustomersProxyView(APIView):
                 {"detail": f"Could not reach license server: {str(e)}"},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
+
+
+# ---------------------------------------------------------------------------
+# Corporate Client List Proxy – GET /api/corporate-clients/
+#
+# Returns the full corporate → shops → client_id tree from the license server.
+# Used by the frontend to build the client-switcher dropdown.
+# ---------------------------------------------------------------------------
+CORPORATE_CLIENT_API_URL = "https://activate.imcbs.com/corporate-clientid/list/"
+
+def _fetch_corporate_list():
+    """Fetch and return the corporate client list from the license server.
+    Returns (data_list, error_response) — one of them will be None."""
+    try:
+        resp = http_requests.get(CORPORATE_CLIENT_API_URL, timeout=10)
+        resp.raise_for_status()
+        payload = resp.json()
+        return payload.get("data", []), None
+    except http_requests.exceptions.Timeout:
+        return None, Response(
+            {"detail": "License server timed out. Please try again."},
+            status=status.HTTP_504_GATEWAY_TIMEOUT,
+        )
+    except http_requests.exceptions.RequestException as e:
+        return None, Response(
+            {"detail": f"Could not reach license server: {str(e)}"},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+
+def _find_corporate_for_client(data_list, client_id):
+    """Return the corporate entry that contains the given client_id, or None."""
+    for corporate in data_list:
+        for shop in corporate.get("shops", []):
+            if shop.get("client_id") == client_id:
+                return corporate
+    return None
+
+
+class CorporateClientListView(APIView):
+    """
+    GET /api/corporate-clients/
+
+    Returns the corporate group that the currently-logged-in ADMIN belongs to,
+    along with all sibling client_ids under the same corporate_id.
+    Each sibling entry also indicates whether it is registered in this HRMS.
+
+    Falls back gracefully when the license server is unreachable or the
+    client_id is not found in the corporate list — returns a single-item
+    list containing only the current client so the UI never hard-errors.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        # Resolve the effective client_id and company name for this session
+        if user.role == 'ADMIN':
+            current_client_id = user.client_id
+            current_company_name = user.company_name or user.username
+        else:
+            return Response(
+                {"detail": "Only Admin accounts can switch clients."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not current_client_id:
+            return Response(
+                {"detail": "No client ID is associated with this account."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── Try to fetch the full corporate list from the license server ──────
+        # If it fails (network error, timeout, or client_id not found), we fall
+        # back to a single-item response so the UI still works.
+        data_list, err = _fetch_corporate_list()
+
+        corporate = None
+        if data_list:
+            corporate = _find_corporate_for_client(data_list, current_client_id)
+
+        # ── Fallback: client_id not in license server or server unreachable ───
+        if not corporate:
+            # Return a minimal single-shop response so the switcher shows
+            # "only you" rather than crashing with an error.
+            return Response({
+                "corporate_id":      None,
+                "corporate_name":    current_company_name,
+                "current_client_id": current_client_id,
+                "license_server_error": (
+                    "This client ID is not registered in the license server. "
+                    "Switching is unavailable."
+                ) if not err else None,
+                "shops": [
+                    {
+                        "shop_name":             current_company_name,
+                        "client_id":             current_client_id,
+                        "projects":              [],
+                        "is_registered_in_hrms": True,
+                        "is_current":            True,
+                    }
+                ],
+            })
+
+        # ── Normal path: build the full sibling list (registered in HRMS only) ──
+        shops_with_status = []
+        for shop in corporate.get("shops", []):
+            cid = shop.get("client_id")
+            is_registered = User.objects.filter(
+                client_id=cid, role__in=('ADMIN', 'SUPER_ADMIN')
+            ).exists()
+            # Only include shops that are registered in this HRMS
+            if not is_registered and cid != current_client_id:
+                continue
+            shops_with_status.append({
+                "shop_name":             shop.get("shop_name"),
+                "client_id":             cid,
+                "projects":              shop.get("projects", []),
+                "is_registered_in_hrms": is_registered,
+                "is_current":            cid == current_client_id,
+            })
+
+        return Response({
+            "corporate_id":      corporate.get("corporate_id"),
+            "corporate_name":    corporate.get("corporate_name"),
+            "current_client_id": current_client_id,
+            "shops":             shops_with_status,
+        })
+
+
+# ---------------------------------------------------------------------------
+# Switch Client – POST /api/switch-client/
+#
+# Allows an ADMIN (or USER) to switch to a different client_id that belongs
+# to the SAME corporate group.
+#
+# Rules:
+#   1. The target client_id must be in the same corporate group as the caller.
+#   2. The target client_id must be registered as an ADMIN in this HRMS.
+#   3. A new JWT token pair is issued scoped to the target admin's tenant.
+#
+# Request body:  { "target_client_id": "XXXXXXXXXXX" }
+# ---------------------------------------------------------------------------
+class SwitchClientView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        target_client_id = request.data.get("target_client_id", "").strip()
+
+        if not target_client_id:
+            return Response(
+                {"detail": "target_client_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Resolve the caller's current client_id
+        if user.role == 'ADMIN':
+            current_client_id = user.client_id
+        else:
+            return Response(
+                {"detail": "Only Admin accounts can switch clients."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not current_client_id:
+            return Response(
+                {"detail": "No client ID is associated with this account."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Cannot switch to the same client
+        if target_client_id == current_client_id:
+            return Response(
+                {"detail": "You are already logged in to this client."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Fetch corporate list and validate both client_ids are in the same group
+        data_list, err = _fetch_corporate_list()
+        if err:
+            return err
+
+        current_corporate = _find_corporate_for_client(data_list, current_client_id)
+        if not current_corporate:
+            return Response(
+                {"detail": f"Your current client ID '{current_client_id}' is not found in the license server."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Check target belongs to the same corporate
+        target_corporate = _find_corporate_for_client(data_list, target_client_id)
+        if not target_corporate:
+            return Response(
+                {"detail": f"Target client ID '{target_client_id}' is not registered in the license server."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if current_corporate.get("corporate_id") != target_corporate.get("corporate_id"):
+            return Response(
+                {
+                    "detail": (
+                        f"Client ID '{target_client_id}' belongs to a different corporate group "
+                        f"({target_corporate.get('corporate_name')}) and cannot be accessed from "
+                        f"your current corporate ({current_corporate.get('corporate_name')})."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Check the target client_id is registered as an ADMIN in this HRMS
+        try:
+            target_admin = User.objects.get(
+                client_id=target_client_id,
+                role__in=('ADMIN', 'SUPER_ADMIN'),
+            )
+        except User.DoesNotExist:
+            # Find the shop name for a friendlier error message
+            shop_name = next(
+                (s.get("shop_name") for s in target_corporate.get("shops", [])
+                 if s.get("client_id") == target_client_id),
+                target_client_id,
+            )
+            return Response(
+                {
+                    "detail": (
+                        f"Client '{shop_name}' (ID: {target_client_id}) is not yet registered "
+                        f"in this HRMS system. Please ask the system administrator to create "
+                        f"an admin account for this client first."
+                    ),
+                    "error_code": "CLIENT_NOT_REGISTERED",
+                    "target_client_id": target_client_id,
+                    "shop_name": shop_name,
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if not target_admin.is_active:
+            return Response(
+                {"detail": f"The admin account for client '{target_client_id}' is inactive."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Issue new tokens for the target admin's tenant
+        refresh = RefreshToken.for_user(target_admin)
+        setup_completed = CompanySettings.objects.filter(owner=target_admin).exists()
+
+        # Find the shop name for the target
+        shop_name = next(
+            (s.get("shop_name") for s in target_corporate.get("shops", [])
+             if s.get("client_id") == target_client_id),
+            target_admin.company_name or target_client_id,
+        )
+
+        return Response({
+            "access":    str(refresh.access_token),
+            "refresh":   str(refresh),
+            "role":      target_admin.role.lower(),
+            "username":  target_admin.username,
+            "client_id": target_client_id,
+            "company_name": target_admin.company_name or shop_name,
+            "shop_name": shop_name,
+            "corporate_id":   current_corporate.get("corporate_id"),
+            "corporate_name": current_corporate.get("corporate_name"),
+            "company_setup_completed": setup_completed,
+            "switched_from": current_client_id,
+            "switched_to":   target_client_id,
+        })
 
 
 # ---------------------------------------------------------------------------
