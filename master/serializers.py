@@ -1,6 +1,6 @@
 # master/serializers.py
 from rest_framework import serializers
-from .models import LeaveType, Allowance, Deduction, Holiday, Announcement, JobTitle
+from .models import LeaveType, Allowance, Deduction, Holiday, Announcement, JobTitle,PayrollPolicy
 
 
 class AnnouncementSerializer(serializers.ModelSerializer):
@@ -158,6 +158,20 @@ class JobTitleSerializer(serializers.ModelSerializer):
             'id', 'name', 'description', 'is_active',
             'created_at', 'updated_at', 'admin_owner',
         ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
+
+class PayrollPolicySerializer(serializers.ModelSerializer):
+    """
+    Serializer for the PayrollPolicy model.
+    The full policy tree lives in `policy_data` (a JSON field).
+    """
+ 
+    class Meta:
+        model = PayrollPolicy
+        fields = ['id', 'policy_data', 'created_at', 'updated_at', 'admin_owner']
         read_only_fields = ['id', 'created_at', 'updated_at']
         extra_kwargs = {
             'admin_owner': {'write_only': True, 'required': False},

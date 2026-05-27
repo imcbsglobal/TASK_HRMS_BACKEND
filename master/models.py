@@ -1,6 +1,7 @@
 from django.db import models
 from django.conf import settings
 from employee_management.models import Employee
+from django.utils import timezone
 
 
 class LeaveType(models.Model):
@@ -404,3 +405,42 @@ class Announcement(models.Model):
 
     def __str__(self):
         return self.title
+    
+# ─────────────────────────────────────────────────────────────────────────────
+# ADD THIS CLASS to master/models.py
+# It stores the full payroll-policy JSON blob per tenant (admin_owner).
+# One row per admin — use get_or_create on reads, and save() on writes.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PayrollPolicy(models.Model):
+    """
+    Stores the company-level payroll policy as a single JSON document.
+    One record per admin tenant. Created automatically on first save.
+    """
+
+    policy_data = models.JSONField(
+        default=dict,
+        help_text="Full payroll-policy configuration (attendance, overtime, leave)"
+    )
+
+    # ── Tenant isolation ──────────────────────────────────────────────────────
+    admin_owner = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name='payroll_policy',
+        limit_choices_to={'role': 'ADMIN'},
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'master_payroll_policy'
+        verbose_name = 'Payroll Policy'
+        verbose_name_plural = 'Payroll Policies'
+
+    def __str__(self):
+        owner = self.admin_owner.email if self.admin_owner else "Global"
+        return f"Payroll Policy — {owner}"

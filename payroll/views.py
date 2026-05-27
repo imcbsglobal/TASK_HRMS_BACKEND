@@ -11,7 +11,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from .models import Payroll
 from .serializers import PayrollSerializer, PayrollDetailSerializer, PayrollCalculateSerializer
 from employee_management.models import Employee
-from master.models import Allowance, Deduction
+from master.models import Allowance, Deduction, PayrollPolicy
 from attendance.models import Attendance, LeaveRequest
 
 
@@ -28,6 +28,173 @@ def _get_admin_owner(user):
     if user.role == 'USER':
         return user.admin_owner
     return None  # SUPER_ADMIN
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POLICY VIOLATION CHECKER
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _check_policy_violations(employee, year, month, policy_data, admin):
+    """
+    Compare an employee's attendance for the given month against policy_data.
+    Returns a list of violation dicts:
+      [{ violation_type, description, count, deduction_amount }, ...]
+    Returns an empty list when the employee is within all policy limits.
+    """
+    from login.models import User
+    from attendance.models import LateArrivalRequest, EarlyDepartureRequest
+
+    violations = []
+
+    # ── Resolve auth user from employee email ─────────────────────────────────
+    auth_user = User.objects.filter(email=employee.email).first()
+    if not auth_user:
+        return violations
+
+    basic_salary = Decimal(str(employee.salary))
+    calendar_days = calendar.monthrange(year, month)[1]
+    per_day = (basic_salary / Decimal(str(calendar_days))).quantize(
+        Decimal('0.01'), rounding=ROUND_HALF_UP
+    )
+    per_half_day = (per_day / Decimal('2')).quantize(
+        Decimal('0.01'), rounding=ROUND_HALF_UP
+    )
+    per_half_hour = (per_day / Decimal('16')).quantize(
+        Decimal('0.01'), rounding=ROUND_HALF_UP
+    )
+
+    def _policy_fine_amount(policy, billable_count):
+        fine = policy.get('fine', {}) or {}
+        value = Decimal(str(fine.get('value') or '0'))
+        if value <= 0 or billable_count <= 0:
+            return None
+
+        if fine.get('type') == 'percentage':
+            per_occurrence = (basic_salary * value / Decimal('100')).quantize(
+                Decimal('0.01'), rounding=ROUND_HALF_UP
+            )
+        else:
+            per_occurrence = value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+        return (per_occurrence * Decimal(str(billable_count))).quantize(
+            Decimal('0.01'), rounding=ROUND_HALF_UP
+        )
+
+    # ── Late Arrival violations ───────────────────────────────────────────────
+    la_policy = policy_data.get('attendance', {}).get('lateArrival', {})
+    if la_policy.get('enabled', True):
+        forgiven = int(la_policy.get('forgivenLatesPerMonth', 3))
+        habitual_threshold = 4  # 4th+ late in a month = habitual
+
+        late_qs = LateArrivalRequest.objects.filter(
+            user=auth_user,
+            date__year=year,
+            date__month=month,
+            admin_owner=admin,
+        )
+        late_count = late_qs.count()
+        billable = max(0, late_count - forgiven)
+
+        if billable > 0:
+            tiers = la_policy.get('tiers', [])
+            habitual_action = la_policy.get('habitualLate', 'full_day_cut')
+
+            if late_count >= habitual_threshold:
+                action = habitual_action
+                desc = f"Habitual late arrival ({late_count} times, {forgiven} forgiven)"
+            elif tiers:
+                tier = tiers[min(billable - 1, len(tiers) - 1)]
+                action = tier.get('action', 'warn_only')
+                desc = f"Late arrival ({late_count} times, {forgiven} forgiven, {billable} billable)"
+            else:
+                action = 'warn_only'
+                desc = f"Late arrival ({late_count} times)"
+
+            deduction_amount = _policy_fine_amount(la_policy, billable)
+            if deduction_amount is None:
+                deduction_amount = Decimal('0')
+                if action == 'half_day_cut':
+                    deduction_amount = per_half_day * Decimal(str(billable))
+                elif action == 'full_day_cut':
+                    deduction_amount = per_day * Decimal(str(billable))
+                elif action == 'half_hour_cut':
+                    deduction_amount = per_half_hour * Decimal(str(billable))
+            # warn_only / no_action → 0
+
+            violations.append({
+                'violation_type':   'late_arrival',
+                'description':      desc,
+                'count':            late_count,
+                'billable_count':   billable,
+                'action':           action,
+                'fine':             la_policy.get('fine', {}),
+                'deduction_amount': float(deduction_amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
+            })
+
+    # ── Early Departure violations ────────────────────────────────────────────
+    ed_policy = policy_data.get('attendance', {}).get('earlyDeparture', {})
+    if ed_policy.get('enabled', True):
+        forgiven_early = int(ed_policy.get('forgivenEarlyPerMonth', 2))
+
+        early_qs = EarlyDepartureRequest.objects.filter(
+            user=auth_user,
+            date__year=year,
+            date__month=month,
+            admin_owner=admin,
+        )
+        early_count = early_qs.count()
+        billable_early = max(0, early_count - forgiven_early)
+
+        if billable_early > 0:
+            ed_tiers = ed_policy.get('tiers', [])
+            if ed_tiers:
+                tier = ed_tiers[min(billable_early - 1, len(ed_tiers) - 1)]
+                action = tier.get('action', 'warn_only')
+            else:
+                action = ed_policy.get('unapprovedEarlyLeave', 'half_hour_cut')
+
+            deduction_amount = _policy_fine_amount(ed_policy, billable_early)
+            if deduction_amount is None:
+                deduction_amount = Decimal('0')
+                if action == 'half_day_cut':
+                    deduction_amount = per_half_day * Decimal(str(billable_early))
+                elif action == 'full_day_cut':
+                    deduction_amount = per_day * Decimal(str(billable_early))
+                elif action in ('half_hour_cut', 'full_absence_marked'):
+                    deduction_amount = per_half_hour * Decimal(str(billable_early))
+
+            violations.append({
+                'violation_type':   'early_departure',
+                'description':      f"Early departure ({early_count} times, {forgiven_early} forgiven, {billable_early} billable)",
+                'count':            early_count,
+                'billable_count':   billable_early,
+                'action':           action,
+                'fine':             ed_policy.get('fine', {}),
+                'deduction_amount': float(deduction_amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
+            })
+
+    # ── Missed punch violations ───────────────────────────────────────────────
+    missed_qs = Attendance.objects.filter(
+        user=auth_user,
+        date__year=year,
+        date__month=month,
+        check_in_time__isnull=False,
+        check_out_time__isnull=True,
+        admin_owner=admin,
+    )
+    missed_count = missed_qs.count()
+    if missed_count > 0:
+        deduction_amount = per_half_hour * Decimal(str(missed_count))
+        violations.append({
+            'violation_type':   'missed_punch',
+            'description':      f"Missed check-out punch ({missed_count} times)",
+            'count':            missed_count,
+            'billable_count':   missed_count,
+            'action':           'warn_only',
+            'deduction_amount': float(deduction_amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
+        })
+
+    return violations
 
 
 def _get_leave_type_breakdown(employee, year, month):
@@ -220,6 +387,14 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
     db_allowances_total = db_allowances.aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
     total_manual_deductions = db_deductions.aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
 
+    policy_obj = PayrollPolicy.objects.filter(admin_owner=admin_owner).first() if admin_owner else None
+    policy_data = policy_obj.policy_data if policy_obj else {}
+    policy_violations = _check_policy_violations(employee, year, month, policy_data, admin_owner)
+    policy_deductions_total = sum(
+        (Decimal(str(v.get('deduction_amount') or '0')) for v in policy_violations),
+        Decimal('0.00'),
+    ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
     # ── Auto-compute PF & Overtime ────────────────────────────────────────────
     pf_amount,  pf_detail  = _calc_pf_amount(employee)
     ot_amount,  ot_detail  = _calc_overtime_amount(employee, total_days)
@@ -228,7 +403,7 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
 
     # ── Totals ────────────────────────────────────────────────────────────────
     total_allowances = Decimal(str(db_allowances_total)) + auto_allowances_total
-    total_deductions = att_deduction + Decimal(str(total_manual_deductions))
+    total_deductions = att_deduction + Decimal(str(total_manual_deductions)) + policy_deductions_total
 
     net_salary = (
         Decimal(str(basic_salary)) + total_allowances - total_deductions
@@ -240,6 +415,7 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
         'total_deductions':        str(total_deductions),
         'attendance_deduction':    str(att_deduction),
         'manual_deductions_total': str(total_manual_deductions),
+        'policy_deductions_total': str(policy_deductions_total),
         'net_salary':              str(net_salary),
         'total_days_in_month':     total_days,
         'total_working_days':      att['working_days'],
@@ -268,7 +444,19 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
         'deductions': [
             {'id': d.id, 'name': d.deduction_name, 'amount': str(d.amount), 'description': d.description}
             for d in db_deductions
+        ] + [
+            {
+                'id': None,
+                'name': v['description'],
+                'amount': str(Decimal(str(v.get('deduction_amount') or '0')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
+                'description': f"Auto policy fine: {v.get('billable_count', v.get('count', 0))} billable occurrence(s)",
+                'source': 'auto_policy',
+                'violation_type': v.get('violation_type'),
+            }
+            for v in policy_violations
+            if Decimal(str(v.get('deduction_amount') or '0')) > 0
         ],
+        'policy_violations': policy_violations,
         'employee_settings': {
             'pf_enabled':                   employee.pf_enabled,
             'pf_number':                    employee.pf_number,
@@ -390,6 +578,7 @@ class PayrollViewSet(viewsets.ModelViewSet):
             'basic_salary': data['basic_salary'], 'total_allowances': data['total_allowances'],
             'total_deductions': data['total_deductions'], 'attendance_deduction': data['attendance_deduction'],
             'manual_deductions_total': data['manual_deductions_total'], 'net_salary': data['net_salary'],
+            'policy_deductions_total': data['policy_deductions_total'],
             'total_days_in_month': data['total_days_in_month'], 'total_working_days': data['total_working_days'],
             'pf_amount': data['pf_amount'], 'overtime_amount': data['overtime_amount'],
             'db_allowances_total': data['db_allowances_total'], 'auto_allowances_total': data['auto_allowances_total'],
@@ -417,3 +606,185 @@ class PayrollViewSet(viewsets.ModelViewSet):
         payroll.payment_reference = request.data.get('payment_reference', '')
         payroll.save()
         return Response(PayrollDetailSerializer(payroll).data, status=status.HTTP_200_OK)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # POLICY VIOLATION ENDPOINTS
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @action(detail=False, methods=['get'], url_path='policy-violations')
+    def policy_violations(self, request):
+        """
+        GET /api/payroll/policy-violations/?year=YYYY&month=MM
+
+        Checks every employee's attendance data for the given month against the
+        saved PayrollPolicy and returns a list of employees who have exceeded
+        the configured limits (late arrivals, early departures, leave days).
+
+        Each violation item includes:
+          - employee info
+          - violation details (what was exceeded, by how much)
+          - suggested deduction amount
+          - whether a deduction has already been applied this month
+        """
+        year  = request.query_params.get('year')
+        month = request.query_params.get('month')
+
+        if not year or not month:
+            return Response(
+                {'error': 'year and month query params are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            year, month = int(year), int(month)
+        except ValueError:
+            return Response({'error': 'Invalid year or month'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user  = request.user
+        admin = _get_admin_owner(user)
+
+        # Load the payroll policy for this tenant
+        from master.models import PayrollPolicy
+        policy_obj = None
+        if admin:
+            policy_obj = PayrollPolicy.objects.filter(admin_owner=admin).first()
+
+        policy_data = policy_obj.policy_data if policy_obj else {}
+
+        # Fetch all employees for this tenant
+        emp_qs = Employee.objects.all()
+        if user.role != 'SUPER_ADMIN':
+            if admin is None:
+                return Response([], status=status.HTTP_200_OK)
+            emp_qs = emp_qs.filter(admin_owner=admin)
+
+        violations = []
+
+        for employee in emp_qs.select_related('department'):
+            emp_violations = _check_policy_violations(employee, year, month, policy_data, admin)
+            if emp_violations:
+                # Check if a policy deduction already exists for this employee/month
+                already_applied = Deduction.objects.filter(
+                    employee=employee,
+                    year=year,
+                    month=month,
+                    deduction_name__startswith='Policy Deduction',
+                ).exists()
+                if admin:
+                    already_applied = Deduction.objects.filter(
+                        employee=employee,
+                        year=year,
+                        month=month,
+                        deduction_name__startswith='Policy Deduction',
+                        admin_owner=admin,
+                    ).exists()
+
+                violations.append({
+                    'employee': {
+                        'id':          employee.id,
+                        'employee_id': employee.employee_id,
+                        'name':        f"{employee.first_name} {employee.last_name}",
+                        'position':    employee.position,
+                        'department':  employee.department.name if employee.department else '',
+                        'salary':      str(employee.salary),
+                    },
+                    'violations':       emp_violations,
+                    'total_deduction':  str(sum(v['deduction_amount'] for v in emp_violations)),
+                    'already_applied':  already_applied,
+                    'year':             year,
+                    'month':            month,
+                })
+
+        return Response(violations, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'], url_path='apply-policy-deduction')
+    def apply_policy_deduction(self, request):
+        """
+        POST /api/payroll/apply-policy-deduction/
+
+        Body:
+          {
+            "employee_id": <int>,
+            "year": <int>,
+            "month": <int>,
+            "deduction_amount": <decimal>,
+            "reason": "<string>"   // optional, defaults to auto-generated
+          }
+
+        Creates a Deduction record for the employee for the given month.
+        Returns the created deduction.
+        """
+        employee_id      = request.data.get('employee_id')
+        year             = request.data.get('year')
+        month            = request.data.get('month')
+        deduction_amount = request.data.get('deduction_amount')
+        reason           = request.data.get('reason', '')
+
+        if not all([employee_id, year, month, deduction_amount]):
+            return Response(
+                {'error': 'employee_id, year, month, and deduction_amount are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            year, month = int(year), int(month)
+            deduction_amount = Decimal(str(deduction_amount))
+        except (ValueError, Exception):
+            return Response({'error': 'Invalid data types'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user  = request.user
+        admin = _get_admin_owner(user)
+
+        emp_qs = Employee.objects.all()
+        if user.role != 'SUPER_ADMIN':
+            if admin is None:
+                return Response({'error': 'No admin tenant found'}, status=status.HTTP_403_FORBIDDEN)
+            emp_qs = emp_qs.filter(admin_owner=admin)
+
+        try:
+            employee = emp_qs.get(id=employee_id)
+        except Employee.DoesNotExist:
+            return Response({'error': 'Employee not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Prevent duplicate policy deductions
+        existing = Deduction.objects.filter(
+            employee=employee,
+            year=year,
+            month=month,
+            deduction_name__startswith='Policy Deduction',
+        )
+        if admin:
+            existing = existing.filter(admin_owner=admin)
+
+        if existing.exists():
+            return Response(
+                {'error': 'A policy deduction has already been applied for this employee and month.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        month_name = dict(Payroll.MONTH_CHOICES).get(month, str(month))
+        deduction_name = f"Policy Deduction – {month_name} {year}"
+        description = reason or f"Auto-applied policy deduction for {month_name} {year}"
+
+        deduction = Deduction.objects.create(
+            employee=employee,
+            deduction_name=deduction_name,
+            year=year,
+            month=month,
+            amount=deduction_amount,
+            description=description,
+            is_active=True,
+            admin_owner=admin,
+        )
+
+        return Response({
+            'id':             deduction.id,
+            'employee_id':    employee.id,
+            'employee_name':  f"{employee.first_name} {employee.last_name}",
+            'deduction_name': deduction.deduction_name,
+            'amount':         str(deduction.amount),
+            'year':           deduction.year,
+            'month':          deduction.month,
+            'description':    deduction.description,
+            'message':        f"Policy deduction of ₹{deduction_amount} applied successfully.",
+        }, status=status.HTTP_201_CREATED)

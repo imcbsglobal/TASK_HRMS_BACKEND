@@ -68,6 +68,7 @@ INSTALLED_APPS = [
     'attendance',
     'payroll',
     'watsapp_config',
+    'experience_certificate',
     'storages',
 ]
 

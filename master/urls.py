@@ -1,7 +1,7 @@
 # master/urls.py
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import LeaveTypeViewSet, AllowanceViewSet, DeductionViewSet, HolidayViewSet, AnnouncementViewSet, JobTitleViewSet
+from .views import LeaveTypeViewSet, AllowanceViewSet, DeductionViewSet, HolidayViewSet, AnnouncementViewSet, JobTitleViewSet,PayrollPolicyViewSet
 
 router = DefaultRouter()
 router.register(r'leave-types',   LeaveTypeViewSet,    basename='leave-type')
@@ -10,6 +10,7 @@ router.register(r'deductions',    DeductionViewSet,    basename='deduction')
 router.register(r'holidays',      HolidayViewSet,      basename='holiday')
 router.register(r'announcements', AnnouncementViewSet, basename='announcement')
 router.register(r'job-titles',    JobTitleViewSet,     basename='job-title')
+router.register(r'payroll-policy',   PayrollPolicyViewSet,  basename='payroll-policy')
 
 urlpatterns = [
     path('', include(router.urls)),

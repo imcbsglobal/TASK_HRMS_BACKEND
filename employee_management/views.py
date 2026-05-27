@@ -51,7 +51,9 @@ def _employee_qs(user):
     - USER        → only employees owned by their admin_owner
     """
     if user.role == 'SUPER_ADMIN':
-        return Employee.objects.select_related('department', 'candidate')
+        return Employee.objects.select_related(
+            'department', 'candidate'
+        ).order_by('first_name', 'last_name', 'employee_id')
 
     admin = _get_admin_owner(user)
     if admin is None:
@@ -59,7 +61,7 @@ def _employee_qs(user):
 
     return Employee.objects.select_related(
         'department', 'candidate'
-    ).filter(admin_owner=admin)
+    ).filter(admin_owner=admin).order_by('first_name', 'last_name', 'employee_id')
 
 
 def _department_qs(user):

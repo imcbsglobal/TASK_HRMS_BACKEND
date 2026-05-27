@@ -30,6 +30,7 @@ urlpatterns = [
     path("api/attendance/", include("attendance.urls")),  # Attendance endpoints
     path("api/payroll/", include("payroll.urls")),  # Payroll endpoints
     path('api/whatsapp/', include('watsapp_config.urls')),
+    path("api/experience-certificates/", include("experience_certificate.urls")),
     path("api/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
 ]
 

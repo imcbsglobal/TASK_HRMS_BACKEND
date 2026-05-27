@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.db.models import Q
 from django.utils import timezone
-from .models import LeaveType, Allowance, Deduction, Holiday, Announcement, JobTitle
+from .models import LeaveType, Allowance, Deduction, Holiday, Announcement, JobTitle,PayrollPolicy
 from .serializers import (
     LeaveTypeSerializer, 
     AllowanceSerializer, 
@@ -13,6 +13,7 @@ from .serializers import (
     HolidaySerializer, 
     AnnouncementSerializer,
     JobTitleSerializer,
+    PayrollPolicySerializer
 )
 
 
@@ -311,3 +312,71 @@ class JobTitleViewSet(viewsets.ModelViewSet):
         titles = self.get_queryset().filter(is_active=True)
         serializer = self.get_serializer(titles, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+    
+# ─────────────────────────────────────────────────────────────────────────────
+# ADD THIS to master/views.py
+# Also add PayrollPolicy + PayrollPolicySerializer to the respective imports.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PayrollPolicyViewSet(viewsets.ViewSet):
+    """
+    Single-resource endpoint for the tenant's payroll policy.
+
+    GET  /api/master/payroll-policy/current/  → returns the current policy
+    PUT  /api/master/payroll-policy/current/  → full replace
+    """
+    permission_classes = [IsAuthenticated]
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+    def _get_admin(self):
+        return _get_admin_owner(self.request.user)
+
+    def _get_or_create_policy(self, admin):
+        """Return (instance, created) for the admin's policy row."""
+        if admin is None:
+            return None, False
+        obj, created = PayrollPolicy.objects.get_or_create(
+            admin_owner=admin,
+            defaults={'policy_data': {}}
+        )
+        return obj, created
+
+    # ── actions ───────────────────────────────────────────────────────────────
+    @action(detail=False, methods=['get', 'put', 'patch'], url_path='current')
+    def current(self, request):
+        """
+        GET  → return the stored policy (or empty dict if none saved yet).
+        PUT  → replace the entire policy_data.
+        PATCH→ merge only the provided keys into policy_data (shallow).
+        """
+        admin = self._get_admin()
+
+        # SUPER_ADMIN has no single policy; return 403 for safety
+        if admin is None and request.user.role != 'SUPER_ADMIN':
+            return Response({'detail': 'No admin tenant found.'}, status=status.HTTP_403_FORBIDDEN)
+
+        if request.method == 'GET':
+            if admin is None:
+                return Response({'policy_data': {}})
+            obj, _ = self._get_or_create_policy(admin)
+            serializer = PayrollPolicySerializer(obj)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        # PUT — full replace
+        if request.method == 'PUT':
+            obj, _ = self._get_or_create_policy(admin)
+            serializer = PayrollPolicySerializer(obj, data=request.data, partial=False)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(admin_owner=admin)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        # PATCH — shallow merge
+        if request.method == 'PATCH':
+            obj, _ = self._get_or_create_policy(admin)
+            # Merge incoming policy_data over stored policy_data
+            incoming = request.data.get('policy_data', {})
+            merged = {**obj.policy_data, **incoming}
+            obj.policy_data = merged
+            obj.save(update_fields=['policy_data', 'updated_at'])
+            serializer = PayrollPolicySerializer(obj)
+            return Response(serializer.data, status=status.HTTP_200_OK)
