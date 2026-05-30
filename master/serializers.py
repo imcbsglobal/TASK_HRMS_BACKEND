@@ -1,6 +1,6 @@
 # master/serializers.py
 from rest_framework import serializers
-from .models import LeaveType, Allowance, Deduction, Holiday, Announcement, JobTitle,PayrollPolicy
+from .models import LeaveType, Allowance, Deduction, Holiday, Announcement, JobTitle,PayrollPolicy,Section
 
 
 class AnnouncementSerializer(serializers.ModelSerializer):
@@ -176,3 +176,18 @@ class PayrollPolicySerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'admin_owner': {'write_only': True, 'required': False},
         }
+
+class SectionSerializer(serializers.ModelSerializer):
+    """Serializer for Section model"""
+ 
+    class Meta:
+        model = Section
+        fields = [
+            'id', 'name', 'description', 'is_active',
+            'created_at', 'updated_at', 'admin_owner',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
+ 

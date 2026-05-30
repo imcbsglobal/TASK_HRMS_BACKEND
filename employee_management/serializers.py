@@ -65,6 +65,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
     department_name = serializers.CharField(
         source="department.name", read_only=True
     )
+    section_name = serializers.CharField(
+        source="section.name", read_only=True, allow_null=True
+    )
     candidate_id = serializers.IntegerField(
         source="candidate.id", read_only=True, allow_null=True
     )
@@ -76,7 +79,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
             'id', 'employee_id', 'candidate', 'candidate_id',
             # Basic Details
             'first_name', 'last_name', 'email', 'phone', 'profile_image',
-            'department', 'department_name', 'position',
+            'department', 'department_name',
+            'section', 'section_name',
+            'position',
             'employment_type', 'status', 'work_location',
             'date_of_birth', 'date_of_joining',
             # Probation
@@ -106,7 +111,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             'employee_id', 'created_at', 'updated_at',
-            'department_name', 'candidate_id',
+            'department_name', 'section_name', 'candidate_id',
             'probation_end_date', 'probation_status',
         ]
         extra_kwargs = {

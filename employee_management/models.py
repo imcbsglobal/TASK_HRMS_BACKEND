@@ -73,6 +73,15 @@ class Employee(models.Model):
         related_name='employees',
     )
 
+    # ── Section (optional) ────────────────────────────────────────────────────
+    section = models.ForeignKey(
+        'master.Section',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='employees',
+    )
+
     position        = models.CharField(max_length=100)
     employment_type = models.CharField(max_length=50)
     status          = models.CharField(max_length=50, default='active')

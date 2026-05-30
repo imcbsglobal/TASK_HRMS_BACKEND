@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.db.models import Q
 from django.utils import timezone
-from .models import LeaveType, Allowance, Deduction, Holiday, Announcement, JobTitle,PayrollPolicy
+from .models import LeaveType, Allowance, Deduction, Holiday, Announcement, JobTitle,PayrollPolicy,Section
 from .serializers import (
     LeaveTypeSerializer, 
     AllowanceSerializer, 
@@ -13,7 +13,8 @@ from .serializers import (
     HolidaySerializer, 
     AnnouncementSerializer,
     JobTitleSerializer,
-    PayrollPolicySerializer
+    PayrollPolicySerializer,
+    SectionSerializer,
 )
 
 
@@ -380,3 +381,41 @@ class PayrollPolicyViewSet(viewsets.ViewSet):
             obj.save(update_fields=['policy_data', 'updated_at'])
             serializer = PayrollPolicySerializer(obj)
             return Response(serializer.data, status=status.HTTP_200_OK)
+        
+class SectionViewSet(viewsets.ModelViewSet):
+    """ViewSet for Section CRUD operations"""
+    queryset = Section.objects.all()
+    serializer_class = SectionSerializer
+    permission_classes = [IsAuthenticated]
+ 
+    def get_queryset(self):
+        user = self.request.user
+        if user.role == 'SUPER_ADMIN':
+            queryset = Section.objects.all()
+        else:
+            admin = _get_admin_owner(user)
+            if admin is None:
+                return Section.objects.none()
+            queryset = Section.objects.filter(admin_owner=admin)
+ 
+        is_active = self.request.query_params.get('is_active', None)
+        if is_active is not None:
+            queryset = queryset.filter(is_active=is_active.lower() == 'true')
+ 
+        search = self.request.query_params.get('search', None)
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search) | Q(description__icontains=search)
+            )
+        return queryset
+ 
+    def perform_create(self, serializer):
+        admin = _get_admin_owner(self.request.user)
+        serializer.save(admin_owner=admin)
+ 
+    @action(detail=False, methods=['get'])
+    def active(self, request):
+        """Return only active sections"""
+        sections = self.get_queryset().filter(is_active=True)
+        serializer = self.get_serializer(sections, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)

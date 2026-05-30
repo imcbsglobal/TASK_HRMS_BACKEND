@@ -444,3 +444,47 @@ class PayrollPolicy(models.Model):
     def __str__(self):
         owner = self.admin_owner.email if self.admin_owner else "Global"
         return f"Payroll Policy — {owner}"
+    
+# ─────────────────────────────────────────────────────────────────────────────
+# ADD THIS CLASS to master/models.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+class Section(models.Model):
+    """Model to store company sections / divisions"""
+
+    name = models.CharField(
+        max_length=150,
+        help_text="Section name (e.g., Finance, Operations, IT)"
+    )
+    description = models.TextField(
+        blank=True,
+        default="",
+        help_text="Optional description of the section"
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Whether this section is currently active"
+    )
+
+    # ── Tenant isolation ──────────────────────────────────────────────────────
+    admin_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='sections',
+        limit_choices_to={'role': 'ADMIN'},
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'master_sections'
+        ordering = ['name']
+        verbose_name = 'Section'
+        verbose_name_plural = 'Sections'
+        unique_together = ['name', 'admin_owner']
+
+    def __str__(self):
+        return self.name
