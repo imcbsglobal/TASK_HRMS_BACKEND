@@ -230,21 +230,9 @@ class Employee(models.Model):
         help_text='Maximum allowed overtime hours per month',
     )
 
-    # ── Shift Details ─────────────────────────────────────────────────────────
-    SHIFT_CHOICES = [
-        ('general',   'General  (9 AM – 6 PM)'),
-        ('morning',   'Morning  (6 AM – 2 PM)'),
-        ('afternoon', 'Afternoon (2 PM – 10 PM)'),
-        ('night',     'Night    (10 PM – 6 AM)'),
-        ('custom',    'Custom'),
-    ]
-    shift_type       = models.CharField(max_length=20, choices=SHIFT_CHOICES, default='general', blank=True)
-    shift_start_time = models.TimeField(null=True, blank=True)
-    shift_end_time   = models.TimeField(null=True, blank=True)
-    weekly_off_days  = models.CharField(
-        max_length=100, blank=True, default='Saturday,Sunday',
-        help_text="Comma-separated off days, e.g. 'Saturday,Sunday'",
-    )
+    # ── Duty Time ─────────────────────────────────────────────────────────────
+    duty_start_time = models.TimeField(null=True, blank=True, help_text='Employee duty start time')
+    duty_end_time   = models.TimeField(null=True, blank=True, help_text='Employee duty end time')
 
     # ── Custom Fields ─────────────────────────────────────────────────────────
     custom_fields = models.JSONField(default=dict, blank=True)

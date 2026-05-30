@@ -42,6 +42,7 @@ class AttendanceSerializer(serializers.ModelSerializer):
             'check_out_latitude', 'check_out_longitude', 'check_out_address', 'check_out_map_url',
             'leave_type', 'leave_type_display',
             'total_break_minutes', 'break_records',
+            'check_out_waived',
             # Tenant – injected by the view, never from client
             'admin_owner',
             'created_at', 'updated_at',
@@ -310,7 +311,7 @@ class CreateLateArrivalRequestSerializer(serializers.ModelSerializer):
 
 class LateArrivalApprovalSerializer(serializers.Serializer):
     """Admin approves or rejects a late arrival request."""
-    action = serializers.ChoiceField(choices=['approve', 'reject'])
+    action = serializers.ChoiceField(choices=['approve', 'reject', 'waive'])
     admin_notes = serializers.CharField(required=False, allow_blank=True)
 
     def validate(self, data):
@@ -412,7 +413,7 @@ class CreateLeaveRequestSerializer(serializers.ModelSerializer):
 
 class LeaveApprovalSerializer(serializers.Serializer):
     """Serializer for admin approving/rejecting leave requests"""
-    action = serializers.ChoiceField(choices=['approve', 'reject'])
+    action = serializers.ChoiceField(choices=['approve', 'reject', 'waive'])
     admin_notes = serializers.CharField(required=False, allow_blank=True)
 
     def validate(self, data):
@@ -582,7 +583,7 @@ class CreateEarlyDepartureRequestSerializer(serializers.ModelSerializer):
 
 class EarlyDepartureApprovalSerializer(serializers.Serializer):
     """Admin approves or rejects an early departure request."""
-    action = serializers.ChoiceField(choices=['approve', 'reject'])
+    action = serializers.ChoiceField(choices=['approve', 'reject', 'waive'])
     admin_notes = serializers.CharField(required=False, allow_blank=True)
 
     def validate(self, data):

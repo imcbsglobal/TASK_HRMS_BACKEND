@@ -92,6 +92,7 @@ def _check_policy_violations(employee, year, month, policy_data, admin):
             date__month=month,
             admin_owner=admin,
         )
+        late_qs = late_qs.exclude(status__in=['waived', 'rejected', 'cancelled'])
         late_count = late_qs.count()
         billable = max(0, late_count - forgiven)
 
@@ -142,6 +143,7 @@ def _check_policy_violations(employee, year, month, policy_data, admin):
             date__month=month,
             admin_owner=admin,
         )
+        early_qs = early_qs.exclude(status__in=['waived', 'rejected', 'cancelled'])
         early_count = early_qs.count()
         billable_early = max(0, early_count - forgiven_early)
 
@@ -182,6 +184,7 @@ def _check_policy_violations(employee, year, month, policy_data, admin):
         check_out_time__isnull=True,
         admin_owner=admin,
     )
+    missed_qs = missed_qs.exclude(check_out_waived=True)
     missed_count = missed_qs.count()
     if missed_count > 0:
         deduction_amount = per_half_hour * Decimal(str(missed_count))
@@ -350,6 +353,34 @@ def _calc_overtime_amount(employee, total_days_in_month):
     }
 
 
+def _policy_violation_label(violation_type):
+    labels = {
+        'late_arrival': 'Late Arrival',
+        'early_departure': 'Early Departure',
+        'missed_punch': 'Missed Punch',
+        'all': 'All Violations',
+    }
+    return labels.get(violation_type or 'all', str(violation_type).replace('_', ' ').title())
+
+
+def _policy_decision_name(kind, violation_type, month, year):
+    month_name = dict(Payroll.MONTH_CHOICES).get(month, str(month))
+    label = _policy_violation_label(violation_type)
+    return f"Policy {kind} - {label} - {month_name} {year}"
+
+
+def _policy_decision_qs(employee, year, month, admin_owner=None):
+    qs = Deduction.objects.filter(
+        employee=employee,
+        year=year,
+        month=month,
+        deduction_name__startswith='Policy ',
+    )
+    if admin_owner:
+        qs = qs.filter(admin_owner=admin_owner)
+    return qs
+
+
 def _build_payroll_dict(employee, year, month, admin_owner=None):
     """
     Central helper for payroll calculation.
@@ -384,16 +415,18 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
         db_allowances = db_allowances.filter(admin_owner=admin_owner)
         db_deductions = db_deductions.filter(admin_owner=admin_owner)
 
+    db_policy_deductions = db_deductions.filter(deduction_name__startswith='Policy Deduction')
+    db_other_deductions = db_deductions.exclude(deduction_name__startswith='Policy Deduction')
+
     db_allowances_total = db_allowances.aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
-    total_manual_deductions = db_deductions.aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
+    total_manual_deductions = db_other_deductions.aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
+    policy_deductions_total = (
+        db_policy_deductions.aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
+    ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
     policy_obj = PayrollPolicy.objects.filter(admin_owner=admin_owner).first() if admin_owner else None
     policy_data = policy_obj.policy_data if policy_obj else {}
     policy_violations = _check_policy_violations(employee, year, month, policy_data, admin_owner)
-    policy_deductions_total = sum(
-        (Decimal(str(v.get('deduction_amount') or '0')) for v in policy_violations),
-        Decimal('0.00'),
-    ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
     # ── Auto-compute PF & Overtime ────────────────────────────────────────────
     pf_amount,  pf_detail  = _calc_pf_amount(employee)
@@ -442,19 +475,14 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
             } for a in db_allowances
         ] + ([pf_detail] if pf_detail else []) + ([ot_detail] if ot_detail else []),
         'deductions': [
-            {'id': d.id, 'name': d.deduction_name, 'amount': str(d.amount), 'description': d.description}
-            for d in db_deductions
-        ] + [
             {
-                'id': None,
-                'name': v['description'],
-                'amount': str(Decimal(str(v.get('deduction_amount') or '0')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
-                'description': f"Auto policy fine: {v.get('billable_count', v.get('count', 0))} billable occurrence(s)",
-                'source': 'auto_policy',
-                'violation_type': v.get('violation_type'),
+                'id': d.id,
+                'name': d.deduction_name,
+                'amount': str(d.amount),
+                'description': d.description,
+                'source': 'policy' if d.deduction_name.startswith('Policy Deduction') else 'manual',
             }
-            for v in policy_violations
-            if Decimal(str(v.get('deduction_amount') or '0')) > 0
+            for d in list(db_other_deductions) + list(db_policy_deductions)
         ],
         'policy_violations': policy_violations,
         'employee_settings': {
@@ -663,21 +691,20 @@ class PayrollViewSet(viewsets.ModelViewSet):
         for employee in emp_qs.select_related('department'):
             emp_violations = _check_policy_violations(employee, year, month, policy_data, admin)
             if emp_violations:
-                # Check if a policy deduction already exists for this employee/month
-                already_applied = Deduction.objects.filter(
-                    employee=employee,
-                    year=year,
-                    month=month,
-                    deduction_name__startswith='Policy Deduction',
-                ).exists()
-                if admin:
-                    already_applied = Deduction.objects.filter(
-                        employee=employee,
-                        year=year,
-                        month=month,
-                        deduction_name__startswith='Policy Deduction',
-                        admin_owner=admin,
-                    ).exists()
+                decision_names = set(
+                    _policy_decision_qs(employee, year, month, admin)
+                    .values_list('deduction_name', flat=True)
+                )
+                for violation in emp_violations:
+                    violation_type = violation.get('violation_type') or 'all'
+                    deduction_name = _policy_decision_name('Deduction', violation_type, month, year)
+                    waiver_name = _policy_decision_name('Waiver', violation_type, month, year)
+                    if deduction_name in decision_names:
+                        violation['decision_status'] = 'approved_deduct'
+                    elif waiver_name in decision_names:
+                        violation['decision_status'] = 'waived'
+                    else:
+                        violation['decision_status'] = 'pending'
 
                 violations.append({
                     'employee': {
@@ -690,7 +717,8 @@ class PayrollViewSet(viewsets.ModelViewSet):
                     },
                     'violations':       emp_violations,
                     'total_deduction':  str(sum(v['deduction_amount'] for v in emp_violations)),
-                    'already_applied':  already_applied,
+                    'already_applied':  any(v.get('decision_status') == 'approved_deduct' for v in emp_violations),
+                    'already_waived':   any(v.get('decision_status') == 'waived' for v in emp_violations),
                     'year':             year,
                     'month':            month,
                 })
@@ -719,6 +747,7 @@ class PayrollViewSet(viewsets.ModelViewSet):
         month            = request.data.get('month')
         deduction_amount = request.data.get('deduction_amount')
         reason           = request.data.get('reason', '')
+        violation_type   = request.data.get('violation_type') or 'all'
 
         if not all([employee_id, year, month, deduction_amount]):
             return Response(
@@ -746,25 +775,37 @@ class PayrollViewSet(viewsets.ModelViewSet):
         except Employee.DoesNotExist:
             return Response({'error': 'Employee not found'}, status=status.HTTP_404_NOT_FOUND)
 
-        # Prevent duplicate policy deductions
-        existing = Deduction.objects.filter(
-            employee=employee,
-            year=year,
-            month=month,
-            deduction_name__startswith='Policy Deduction',
+        deduction_name = _policy_decision_name('Deduction', violation_type, month, year)
+        waiver_name    = _policy_decision_name('Waiver',    violation_type, month, year)
+        existing_qs    = _policy_decision_qs(employee, year, month, admin).filter(
+            deduction_name__in=[deduction_name, waiver_name]
         )
-        if admin:
-            existing = existing.filter(admin_owner=admin)
 
-        if existing.exists():
-            return Response(
-                {'error': 'A policy deduction has already been applied for this employee and month.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        if existing_qs.exists():
+            existing = existing_qs.first()
+            if existing.deduction_name == deduction_name:
+                # Already deducted — idempotent: return 200
+                return Response({
+                    'id':             existing.id,
+                    'employee_id':    employee.id,
+                    'employee_name':  f"{employee.first_name} {employee.last_name}",
+                    'deduction_name': existing.deduction_name,
+                    'amount':         str(existing.amount),
+                    'year':           existing.year,
+                    'month':          existing.month,
+                    'description':    existing.description,
+                    'message':        'Policy deduction was already applied for this period.',
+                    'already_exists': True,
+                }, status=status.HTTP_200_OK)
+            else:
+                # A waiver exists — cannot also deduct
+                return Response(
+                    {'error': 'This penalty has already been waived for this employee and period. Cancel the waiver before applying a deduction.'},
+                    status=status.HTTP_409_CONFLICT,
+                )
 
-        month_name = dict(Payroll.MONTH_CHOICES).get(month, str(month))
-        deduction_name = f"Policy Deduction – {month_name} {year}"
-        description = reason or f"Auto-applied policy deduction for {month_name} {year}"
+        month_name    = dict(Payroll.MONTH_CHOICES).get(month, str(month))
+        description   = reason or f"Approved policy deduction for {_policy_violation_label(violation_type)} in {month_name} {year}"
 
         deduction = Deduction.objects.create(
             employee=employee,
@@ -787,4 +828,98 @@ class PayrollViewSet(viewsets.ModelViewSet):
             'month':          deduction.month,
             'description':    deduction.description,
             'message':        f"Policy deduction of ₹{deduction_amount} applied successfully.",
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['post'], url_path='waive-policy-deduction')
+    def waive_policy_deduction(self, request):
+        """
+        POST /api/payroll/waive-policy-deduction/
+
+        Records a per-violation waiver. The row is inactive with zero amount,
+        so payroll totals are not affected.
+        """
+        employee_id    = request.data.get('employee_id')
+        year           = request.data.get('year')
+        month          = request.data.get('month')
+        reason         = request.data.get('reason', '')
+        violation_type = request.data.get('violation_type') or 'all'
+
+        if not all([employee_id, year, month]):
+            return Response(
+                {'error': 'employee_id, year, and month are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            year, month = int(year), int(month)
+        except ValueError:
+            return Response({'error': 'Invalid data types'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = request.user
+        admin = _get_admin_owner(user)
+
+        emp_qs = Employee.objects.all()
+        if user.role != 'SUPER_ADMIN':
+            if admin is None:
+                return Response({'error': 'No admin tenant found'}, status=status.HTTP_403_FORBIDDEN)
+            emp_qs = emp_qs.filter(admin_owner=admin)
+
+        try:
+            employee = emp_qs.get(id=employee_id)
+        except Employee.DoesNotExist:
+            return Response({'error': 'Employee not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        waiver_name    = _policy_decision_name('Waiver',    violation_type, month, year)
+        deduction_name = _policy_decision_name('Deduction', violation_type, month, year)
+        existing_qs    = _policy_decision_qs(employee, year, month, admin).filter(
+            deduction_name__in=[waiver_name, deduction_name]
+        )
+
+        if existing_qs.exists():
+            existing = existing_qs.first()
+            if existing.deduction_name == waiver_name:
+                # Already waived — idempotent: return 200
+                return Response({
+                    'id':             existing.id,
+                    'employee_id':    employee.id,
+                    'employee_name':  f"{employee.first_name} {employee.last_name}",
+                    'deduction_name': existing.deduction_name,
+                    'amount':         str(existing.amount),
+                    'year':           existing.year,
+                    'month':          existing.month,
+                    'description':    existing.description,
+                    'message':        'This penalty was already waived for this period.',
+                    'already_exists': True,
+                }, status=status.HTTP_200_OK)
+            else:
+                # A deduction already exists — cannot also waive
+                return Response(
+                    {'error': 'A salary deduction has already been applied for this employee and period. Cancel the deduction before issuing a waiver.'},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+        month_name = dict(Payroll.MONTH_CHOICES).get(month, str(month))
+        description = reason or f"Waived policy deduction for {_policy_violation_label(violation_type)} in {month_name} {year}"
+
+        waiver = Deduction.objects.create(
+            employee=employee,
+            deduction_name=waiver_name,
+            year=year,
+            month=month,
+            amount=Decimal('0.00'),
+            description=description,
+            is_active=False,
+            admin_owner=admin,
+        )
+
+        return Response({
+            'id': waiver.id,
+            'employee_id': employee.id,
+            'employee_name': f"{employee.first_name} {employee.last_name}",
+            'deduction_name': waiver.deduction_name,
+            'amount': str(waiver.amount),
+            'year': waiver.year,
+            'month': waiver.month,
+            'description': waiver.description,
+            'message': 'Policy penalty waived successfully.',
         }, status=status.HTTP_201_CREATED)

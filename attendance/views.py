@@ -192,6 +192,18 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             'attendance': AttendanceSerializer(attendance).data
         }, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['post'], url_path='waive-missed-punch')
+    def waive_missed_punch(self, request, pk=None):
+        if not _is_admin(request.user):
+            return Response({'error': 'Only admins can waive missed punches.'}, status=status.HTTP_403_FORBIDDEN)
+        attendance = self.get_object()
+        attendance.check_out_waived = True
+        attendance.save(update_fields=['check_out_waived', 'updated_at'])
+        return Response({
+            'message': 'Missed punch waived successfully.',
+            'attendance': AttendanceSerializer(attendance).data
+        }, status=status.HTTP_200_OK)
+
     @action(detail=False, methods=['post'], url_path='manual-mark')
     def manual_mark(self, request):
         """
@@ -934,13 +946,19 @@ class LateArrivalRequestViewSet(viewsets.ModelViewSet):
 
         late_req = self.get_object()
 
-        if late_req.status != 'pending':
+        action_type = serializer.validated_data['action']
+
+        # Allow waiving an already-approved request; block everything else on non-pending
+        if late_req.status == 'pending':
+            pass  # all actions allowed
+        elif late_req.status == 'approved' and action_type == 'waive':
+            pass  # waiving an approved request is explicitly allowed
+        else:
             return Response(
                 {'error': f'Cannot review a request that is already "{late_req.status}".'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        action_type = serializer.validated_data['action']
         admin_notes = serializer.validated_data.get('admin_notes', '')
         admin_owner = _get_admin_owner(request.user)
 
@@ -963,6 +981,31 @@ class LateArrivalRequestViewSet(viewsets.ModelViewSet):
             if not attendance.is_verified:
                 attendance.status = 'late'
                 attendance.notes = f'Late arrival approved – {late_req.reason}'
+                attendance.is_verified = True
+                attendance.verified_by = request.user
+                attendance.verified_at = timezone.now()
+                attendance.save(update_fields=[
+                    'status', 'notes', 'is_verified', 'verified_by', 'verified_at', 'updated_at',
+                ])
+        elif action_type == 'waive':
+            late_req.status = 'waived'
+            message = 'Late arrival request waived.'
+
+            attendance, _ = Attendance.objects.get_or_create(
+                user=late_req.user,
+                date=late_req.date,
+                admin_owner=admin_owner,
+                defaults={
+                    'status': 'late',
+                    'notes': f'Late arrival waived – {late_req.reason}',
+                    'is_verified': True,
+                    'verified_by': request.user,
+                    'verified_at': timezone.now(),
+                },
+            )
+            if not attendance.is_verified:
+                attendance.status = 'late'
+                attendance.notes = f'Late arrival waived – {late_req.reason}'
                 attendance.is_verified = True
                 attendance.verified_by = request.user
                 attendance.verified_at = timezone.now()
@@ -1051,13 +1094,19 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
         leave_request = self.get_object()
 
-        if leave_request.status not in ['pending']:
+        action_type = serializer.validated_data['action']
+
+        # Allow waiving an already-approved request; block everything else on non-pending
+        if leave_request.status == 'pending':
+            pass  # all actions allowed
+        elif leave_request.status == 'approved' and action_type == 'waive':
+            pass  # waiving an approved leave is explicitly allowed
+        else:
             return Response(
                 {'error': f'Cannot review a leave request that is already "{leave_request.status}".'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        action_type = serializer.validated_data['action']
         admin_notes = serializer.validated_data.get('admin_notes', '')
         admin_owner = _get_admin_owner(request.user)
 
@@ -1083,6 +1132,33 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
                     if not created and not attendance.check_in_time:
                         attendance.status = 'leave'
                         attendance.notes = f'Approved leave: {leave_request.get_leave_type_display()}'
+                        attendance.is_verified = True
+                        attendance.verified_by = request.user
+                        attendance.verified_at = timezone.now()
+                        attendance.save(update_fields=['status', 'notes', 'is_verified', 'verified_by', 'verified_at', 'updated_at'])
+                current_date += timedelta(days=1)
+        elif action_type == 'waive':
+            leave_request.status = 'waived'
+            message = 'Leave request waived successfully.'
+
+            current_date = leave_request.start_date
+            while current_date <= leave_request.end_date:
+                if current_date.weekday() < 5:
+                    attendance, created = Attendance.objects.get_or_create(
+                        user=leave_request.user,
+                        date=current_date,
+                        admin_owner=admin_owner,
+                        defaults={
+                            'status': 'leave',
+                            'notes': f'Waived leave: {leave_request.get_leave_type_display()}',
+                            'is_verified': True,
+                            'verified_by': request.user,
+                            'verified_at': timezone.now(),
+                        }
+                    )
+                    if not created and not attendance.check_in_time:
+                        attendance.status = 'leave'
+                        attendance.notes = f'Waived leave: {leave_request.get_leave_type_display()}'
                         attendance.is_verified = True
                         attendance.verified_by = request.user
                         attendance.verified_at = timezone.now()
@@ -1295,13 +1371,19 @@ class EarlyDepartureRequestViewSet(viewsets.ModelViewSet):
 
         early_req = self.get_object()
 
-        if early_req.status != 'pending':
+        action_type = serializer.validated_data['action']
+
+        # Allow waiving an already-approved request; block everything else on non-pending
+        if early_req.status == 'pending':
+            pass  # all actions allowed
+        elif early_req.status == 'approved' and action_type == 'waive':
+            pass  # waiving an approved request is explicitly allowed
+        else:
             return Response(
                 {'error': f'Cannot review a request that is already "{early_req.status}".'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        action_type = serializer.validated_data['action']
         admin_notes = serializer.validated_data.get('admin_notes', '')
         admin_owner = _get_admin_owner(request.user)
 
@@ -1324,6 +1406,31 @@ class EarlyDepartureRequestViewSet(viewsets.ModelViewSet):
             if not created and not attendance.is_verified:
                 attendance.status = 'half_day'
                 attendance.notes = f'Early departure approved – {early_req.reason}'
+                attendance.is_verified = True
+                attendance.verified_by = request.user
+                attendance.verified_at = timezone.now()
+                attendance.save(update_fields=[
+                    'status', 'notes', 'is_verified', 'verified_by', 'verified_at', 'updated_at',
+                ])
+        elif action_type == 'waive':
+            early_req.status = 'waived'
+            message = 'Early departure request waived successfully.'
+
+            attendance, created = Attendance.objects.get_or_create(
+                user=early_req.user,
+                date=early_req.date,
+                admin_owner=admin_owner,
+                defaults={
+                    'status': 'half_day',
+                    'notes': f'Early departure waived – {early_req.reason}',
+                    'is_verified': True,
+                    'verified_by': request.user,
+                    'verified_at': timezone.now(),
+                },
+            )
+            if not created and not attendance.is_verified:
+                attendance.status = 'half_day'
+                attendance.notes = f'Early departure waived – {early_req.reason}'
                 attendance.is_verified = True
                 attendance.verified_by = request.user
                 attendance.verified_at = timezone.now()

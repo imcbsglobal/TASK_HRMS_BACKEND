@@ -95,8 +95,8 @@ class EmployeeSerializer(serializers.ModelSerializer):
             # Overtime Settings
             'overtime_enabled', 'overtime_rate_type', 'overtime_rate',
             'max_overtime_hours_per_month',
-            # Shift Details
-            'shift_type', 'shift_start_time', 'shift_end_time', 'weekly_off_days',
+            # Duty Time
+            'duty_start_time', 'duty_end_time',
             # Custom Fields
             'custom_fields',
             # Tenant

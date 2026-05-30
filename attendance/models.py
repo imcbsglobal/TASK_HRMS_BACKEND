@@ -17,6 +17,7 @@ class Attendance(models.Model):
         ('pending', 'Pending'),
         ('approved', 'Approved'),
         ('rejected', 'Rejected'),
+        ('waived', 'Waived'),
     ]
 
     # ── Tenant isolation ──────────────────────────────────────────────────────
@@ -33,6 +34,7 @@ class Attendance(models.Model):
     date = models.DateField(default=timezone.now)
     check_in_time = models.DateTimeField(null=True, blank=True)
     check_out_time = models.DateTimeField(null=True, blank=True)
+    check_out_waived = models.BooleanField(default=False)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='absent')
     total_hours = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
     total_break_minutes = models.IntegerField(default=0, help_text='Total break duration in minutes for this day.')
@@ -156,6 +158,7 @@ class LateArrivalRequest(models.Model):
         ('approved',  'Approved'),
         ('rejected',  'Rejected'),
         ('cancelled', 'Cancelled'),
+        ('waived',    'Waived'),
     ]
 
     # ── Tenant isolation ──────────────────────────────────────────────────────
@@ -198,6 +201,7 @@ class LeaveRequest(models.Model):
     STATUS_CHOICES = [
         ('pending', 'Pending'), ('approved', 'Approved'),
         ('rejected', 'Rejected'), ('cancelled', 'Cancelled'),
+        ('waived', 'Waived'),
     ]
     DURATION_TYPE_CHOICES = [
         ('full_day', 'Full Day'),
@@ -299,6 +303,7 @@ class EarlyDepartureRequest(models.Model):
         ('approved',  'Approved'),
         ('rejected',  'Rejected'),
         ('cancelled', 'Cancelled'),
+        ('waived',    'Waived'),
     ]
 
     # ── Tenant isolation ──────────────────────────────────────────────────────
