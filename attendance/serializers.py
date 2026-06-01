@@ -17,6 +17,7 @@ class UserSerializer(serializers.ModelSerializer):
 class AttendanceSerializer(serializers.ModelSerializer):
     user_name = serializers.SerializerMethodField()
     user_username = serializers.CharField(source='user.username', read_only=True)
+    user_profile_image = serializers.SerializerMethodField()
     check_in_time_formatted = serializers.SerializerMethodField()
     check_out_time_formatted = serializers.SerializerMethodField()
     date_formatted = serializers.SerializerMethodField()
@@ -31,7 +32,8 @@ class AttendanceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Attendance
         fields = [
-            'id', 'user', 'user_name', 'user_username', 'date', 'date_formatted',
+            'id', 'user', 'user_name', 'user_username', 'user_profile_image',
+            'date', 'date_formatted',
             'check_in_time', 'check_in_time_formatted',
             'check_out_time', 'check_out_time_formatted',
             'status', 'total_hours', 'notes',
@@ -59,6 +61,19 @@ class AttendanceSerializer(serializers.ModelSerializer):
     def get_user_name(self, obj):
         full_name = (obj.user.full_name or "").strip()
         return full_name if full_name else obj.user.username
+
+    def get_user_profile_image(self, obj):
+        """Return employee profile image (R2) falling back to user profile image."""
+        try:
+            from employee_management.models import Employee
+            employee = Employee.objects.filter(email=obj.user.email).first()
+            if employee and employee.profile_image:
+                return employee.profile_image.url
+        except Exception:
+            pass
+        if obj.user.profile_image:
+            return obj.user.profile_image.url
+        return None
 
     def get_check_in_time_formatted(self, obj):
         if obj.check_in_time:

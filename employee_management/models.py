@@ -99,6 +99,18 @@ class Employee(models.Model):
     date_of_birth   = models.DateField(null=True, blank=True)
     date_of_joining = models.DateField()
 
+    GENDER_CHOICES = [
+        ('male',   'Male'),
+        ('female', 'Female'),
+        ('other',  'Other'),
+    ]
+    gender = models.CharField(
+        max_length=10,
+        choices=GENDER_CHOICES,
+        blank=True,
+        default='',
+    )
+
     # ── Probation Details ─────────────────────────────────────────────────────
     probation_period_months = models.PositiveSmallIntegerField(
         null=True,

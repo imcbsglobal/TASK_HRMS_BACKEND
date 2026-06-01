@@ -83,7 +83,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
             'section', 'section_name',
             'position',
             'employment_type', 'status', 'work_location',
-            'date_of_birth', 'date_of_joining',
+            'date_of_birth', 'gender', 'date_of_joining',
             # Probation
             'probation_period_months', 'probation_end_date', 'probation_status',
             'address', 'emergency_contact', 'emergency_contact_name',

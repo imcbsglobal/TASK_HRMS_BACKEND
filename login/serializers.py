@@ -10,19 +10,31 @@ User = get_user_model()
 # ---------------------------------------------------------------------------
 class UserSerializer(serializers.ModelSerializer):
     profile_image = serializers.SerializerMethodField()
+    employee_profile_image = serializers.SerializerMethodField()
 
     class Meta:
         model  = User
         fields = (
             'id', 'username', 'first_name', 'last_name',
-            'email', 'role', 'profile_image', 'is_active',
-            'plain_password', 'work_location', 'client_id', 'admin_owner',
-            'company_name',
+            'email', 'role', 'profile_image', 'employee_profile_image',
+            'is_active', 'plain_password', 'work_location', 'client_id',
+            'admin_owner', 'company_name',
         )
 
     def get_profile_image(self, obj):
         if obj.profile_image:
             return obj.profile_image.url
+        return None
+
+    def get_employee_profile_image(self, obj):
+        """Return the linked employee's profile photo (stored in R2) if available."""
+        try:
+            from employee_management.models import Employee
+            employee = Employee.objects.filter(email=obj.email).first()
+            if employee and employee.profile_image:
+                return employee.profile_image.url
+        except Exception:
+            pass
         return None
 
 

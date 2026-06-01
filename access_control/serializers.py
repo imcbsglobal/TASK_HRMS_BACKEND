@@ -68,11 +68,30 @@ class UserWithAccessSerializer(serializers.ModelSerializer):
     user_role = UserRoleSerializer(read_only=True)
     menu_access = serializers.SerializerMethodField()
     accessible_menus = serializers.SerializerMethodField()
+    profile_image = serializers.SerializerMethodField()
+    employee_profile_image = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = ['id', 'username', 'email', 'first_name', 'last_name', 'is_active', 'role',
+                  'profile_image', 'employee_profile_image',
                   'user_role', 'menu_access', 'accessible_menus']
+
+    def get_profile_image(self, obj):
+        if obj.profile_image:
+            return obj.profile_image.url
+        return None
+
+    def get_employee_profile_image(self, obj):
+        """Return the linked employee's profile photo (R2) matched by email."""
+        try:
+            from employee_management.models import Employee
+            employee = Employee.objects.filter(email=obj.email).first()
+            if employee and employee.profile_image:
+                return employee.profile_image.url
+        except Exception:
+            pass
+        return None
 
     def get_menu_access(self, obj):
         """Get all menu access permissions for the user"""
