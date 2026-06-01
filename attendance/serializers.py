@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest, EmployeeFaceData, BreakRecord
+from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest, EmployeeFaceData, BreakRecord,SalaryAdvanceRequest
 from django.utils import timezone
 from datetime import datetime, timedelta
 import pytz
@@ -622,3 +622,107 @@ class EmployeeFaceDataSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'admin_owner': {'write_only': True, 'required': False},
         }
+# ─────────────────────────────────────────────────────────────────────────────
+# ADD to your existing serializers.py
+# 1. Add SalaryAdvanceRequest to the import at the top:
+#    from .models import (..., SalaryAdvanceRequest)
+# 2. Paste the three classes below at the bottom of serializers.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SalaryAdvanceRequestSerializer(serializers.ModelSerializer):
+    """Full read serializer – used in list / detail views."""
+    user_name     = serializers.SerializerMethodField()
+    user_username = serializers.CharField(source='user.username', read_only=True)
+    reviewed_by_name = serializers.CharField(
+        source='reviewed_by.full_name', read_only=True, allow_null=True
+    )
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    amount_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SalaryAdvanceRequest
+        fields = [
+            'id', 'user', 'user_name', 'user_username',
+            'amount', 'amount_display',
+            'reason', 'repayment_months',
+            'status', 'status_display',
+            'reviewed_by', 'reviewed_by_name', 'reviewed_at',
+            'admin_notes', 'approved_amount',
+            # Tenant – injected by the view, never from client
+            'admin_owner',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'user', 'status', 'reviewed_by', 'reviewed_at',
+            'approved_amount', 'created_at', 'updated_at',
+        ]
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
+
+    def get_user_name(self, obj):
+        full_name = (obj.user.full_name or "").strip()
+        return full_name if full_name else obj.user.username
+
+    def get_amount_display(self, obj):
+        """Return a formatted currency string, e.g. ₹10,000.00"""
+        try:
+            return f"₹{float(obj.amount):,.2f}"
+        except Exception:
+            return str(obj.amount)
+
+
+class CreateSalaryAdvanceRequestSerializer(serializers.ModelSerializer):
+    """Write serializer – used when a user submits a new request."""
+
+    class Meta:
+        model = SalaryAdvanceRequest
+        fields = ['amount', 'reason', 'repayment_months']
+
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Amount must be greater than zero.")
+        return value
+
+    def validate_repayment_months(self, value):
+        if value < 1 or value > 12:
+            raise serializers.ValidationError(
+                "Repayment months must be between 1 and 12."
+            )
+        return value
+
+    def validate(self, data):
+        user = self.context['request'].user
+        # Prevent duplicate pending requests
+        existing = SalaryAdvanceRequest.objects.filter(
+            user=user, status='pending'
+        ).first()
+        if existing:
+            raise serializers.ValidationError(
+                "You already have a pending salary advance request. "
+                "Please wait for it to be reviewed before submitting another."
+            )
+        return data
+
+
+class SalaryAdvanceApprovalSerializer(serializers.Serializer):
+    """Admin approves or rejects a salary advance request."""
+    action         = serializers.ChoiceField(choices=['approve', 'reject'])
+    admin_notes    = serializers.CharField(required=False, allow_blank=True)
+    approved_amount = serializers.DecimalField(
+        max_digits=12, decimal_places=2,
+        required=False, allow_null=True,
+        help_text="Set a different amount if approving a partial advance."
+    )
+
+    def validate(self, data):
+        user = self.context['request'].user
+        is_admin = (
+            user.is_staff or user.is_superuser or
+            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+        )
+        if not is_admin:
+            raise serializers.ValidationError(
+                "Only admins can approve/reject salary advance requests."
+            )
+        return data

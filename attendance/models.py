@@ -375,3 +375,67 @@ class EmployeeFaceData(models.Model):
 
     def __str__(self):
         return f"Face Data for {self.user.username}"
+    
+# ─────────────────────────────────────────────────────────────────────────────
+# ADD THIS CLASS to the bottom of your existing models.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SalaryAdvanceRequest(models.Model):
+    STATUS_CHOICES = [
+        ('pending',   'Pending'),
+        ('approved',  'Approved'),
+        ('rejected',  'Rejected'),
+        ('cancelled', 'Cancelled'),
+    ]
+
+    # ── Tenant isolation ──────────────────────────────────────────────────────
+    admin_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='owned_salary_advance_requests',
+        null=True, blank=True,
+        help_text="The admin/tenant who owns this request.",
+    )
+    # ─────────────────────────────────────────────────────────────────────────
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='salary_advance_requests',
+    )
+    amount = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        help_text="Requested advance amount in the local currency."
+    )
+    reason = models.TextField(help_text="Reason for requesting the salary advance.")
+    repayment_months = models.PositiveIntegerField(
+        default=1,
+        help_text="Number of months over which the advance will be repaid."
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='reviewed_salary_advances',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    admin_notes = models.TextField(blank=True, null=True)
+    approved_amount = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        null=True, blank=True,
+        help_text="Amount actually approved (may differ from requested amount)."
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Salary Advance Request'
+        verbose_name_plural = 'Salary Advance Requests'
+
+    def __str__(self):
+        return (
+            f"{self.user.username} – ₹{self.amount} "
+            f"({self.status})"
+        )

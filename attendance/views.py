@@ -54,7 +54,7 @@ except Exception:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest, EmployeeFaceData, BreakRecord
+from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest, EmployeeFaceData, BreakRecord,SalaryAdvanceRequest
 from .geofence import validate_geofence
 from .serializers import (
     AttendanceSerializer, CheckInSerializer, CheckOutSerializer,
@@ -67,6 +67,8 @@ from .serializers import (
     EarlyDepartureRequestSerializer, CreateEarlyDepartureRequestSerializer,
     EarlyDepartureApprovalSerializer,
     BreakRecordSerializer,
+    SalaryAdvanceRequestSerializer, CreateSalaryAdvanceRequestSerializer,
+    SalaryAdvanceApprovalSerializer,
 )
 
 
@@ -2560,3 +2562,157 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
             'message': 'Successfully checked out',
             'attendance': AttendanceSerializer(attendance).data
         }, status=status.HTTP_200_OK)
+    
+ 
+class SalaryAdvanceRequestViewSet(viewsets.ModelViewSet):
+    """
+    Salary Advance Request ViewSet
+    ─────────────────────────────
+    Users  : create, list (own), cancel (own pending)
+    Admins : list (all), review (approve/reject)
+ 
+    Endpoints (prefix: /attendance/salary-advance-requests/)
+    ─────────────────────────────────────────────────────────
+    GET    /                          list  – own or all (admin)
+    POST   /                          create new request (user)
+    GET    /my-requests/              user's own requests
+    GET    /pending/                  admin: all pending
+    GET    /stats/                    admin: summary counts
+    POST   /{id}/review/             admin: approve or reject
+    DELETE /{id}/                    user: cancel own pending request
+    """
+ 
+    serializer_class   = SalaryAdvanceRequestSerializer
+    permission_classes = [permissions.IsAuthenticated]
+ 
+    # ── Queryset ──────────────────────────────────────────────────────────────
+ 
+    def get_queryset(self):
+        user = self.request.user
+        admin_owner = _get_admin_owner(user)
+        qs = SalaryAdvanceRequest.objects.filter(admin_owner=admin_owner)
+        if _is_admin(user):
+            return qs
+        return qs.filter(user=user)
+ 
+    # ── Create ────────────────────────────────────────────────────────────────
+ 
+    def create(self, request, *args, **kwargs):
+        serializer = CreateSalaryAdvanceRequestSerializer(
+            data=request.data, context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        instance = serializer.save(
+            user=request.user,
+            admin_owner=_get_admin_owner(request.user),
+        )
+        return Response(
+            SalaryAdvanceRequestSerializer(instance).data,
+            status=status.HTTP_201_CREATED,
+        )
+ 
+    # ── Cancel (user deletes own pending request) ─────────────────────────────
+ 
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.user != request.user:
+            return Response(
+                {'error': 'You can only cancel your own requests.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if instance.status != 'pending':
+            return Response(
+                {'error': 'Only pending requests can be cancelled.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        instance.status = 'cancelled'
+        instance.save(update_fields=['status', 'updated_at'])
+        return Response(
+            SalaryAdvanceRequestSerializer(instance).data,
+            status=status.HTTP_200_OK,
+        )
+ 
+    # ── Admin: review (approve / reject) ─────────────────────────────────────
+ 
+    @action(detail=True, methods=['post'], url_path='review')
+    def review(self, request, pk=None):
+        if not _is_admin(request.user):
+            return Response(
+                {'error': 'Only admins can review salary advance requests.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+ 
+        serializer = SalaryAdvanceApprovalSerializer(
+            data=request.data, context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+ 
+        instance = self.get_object()
+        if instance.status != 'pending':
+            return Response(
+                {'error': f'This request is already {instance.status}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+ 
+        action_val      = serializer.validated_data['action']
+        admin_notes     = serializer.validated_data.get('admin_notes', '')
+        approved_amount = serializer.validated_data.get('approved_amount')
+ 
+        instance.status      = 'approved' if action_val == 'approve' else 'rejected'
+        instance.reviewed_by = request.user
+        instance.reviewed_at = timezone.now()
+        instance.admin_notes = admin_notes
+ 
+        if action_val == 'approve':
+            instance.approved_amount = approved_amount or instance.amount
+ 
+        instance.save(update_fields=[
+            'status', 'reviewed_by', 'reviewed_at',
+            'admin_notes', 'approved_amount', 'updated_at',
+        ])
+ 
+        return Response(
+            SalaryAdvanceRequestSerializer(instance).data,
+            status=status.HTTP_200_OK,
+        )
+ 
+    # ── User: own requests ────────────────────────────────────────────────────
+ 
+    @action(detail=False, methods=['get'], url_path='my-requests')
+    def my_requests(self, request):
+        qs = SalaryAdvanceRequest.objects.filter(
+            user=request.user,
+            admin_owner=_get_admin_owner(request.user),
+        ).order_by('-created_at')
+        serializer = SalaryAdvanceRequestSerializer(qs, many=True)
+        return Response(serializer.data)
+ 
+    # ── Admin: pending list ───────────────────────────────────────────────────
+ 
+    @action(detail=False, methods=['get'], url_path='pending')
+    def pending(self, request):
+        if not _is_admin(request.user):
+            return Response(
+                {'error': 'Only admins can view pending requests.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        qs = self.get_queryset().filter(status='pending').order_by('-created_at')
+        serializer = SalaryAdvanceRequestSerializer(qs, many=True)
+        return Response(serializer.data)
+ 
+    # ── Admin: stats ──────────────────────────────────────────────────────────
+ 
+    @action(detail=False, methods=['get'], url_path='stats')
+    def stats(self, request):
+        if not _is_admin(request.user):
+            return Response(
+                {'error': 'Only admins can view stats.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        qs = self.get_queryset()
+        return Response({
+            'total':    qs.count(),
+            'pending':  qs.filter(status='pending').count(),
+            'approved': qs.filter(status='approved').count(),
+            'rejected': qs.filter(status='rejected').count(),
+        })
