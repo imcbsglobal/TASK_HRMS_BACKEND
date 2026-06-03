@@ -4,6 +4,7 @@ from .models import (
     Department,
     CustomFieldDefinition,
     EmployeeAsset,
+    EmployeeDocument,
     SalaryIncrementHistory,
 )
 
@@ -157,3 +158,21 @@ class EmployeeAssetSerializer(serializers.ModelSerializer):
         model = EmployeeAsset
         fields = '__all__'
         read_only_fields = ['created_at', 'updated_at']
+
+
+class EmployeeDocumentSerializer(serializers.ModelSerializer):
+    file_name = serializers.ReadOnlyField()
+    file_size = serializers.ReadOnlyField()
+    document_type_display = serializers.CharField(
+        source='get_document_type_display', read_only=True
+    )
+
+    class Meta:
+        model = EmployeeDocument
+        fields = [
+            'id', 'employee',
+            'document_type', 'document_type_display',
+            'title', 'file', 'file_name', 'file_size',
+            'notes', 'uploaded_at', 'updated_at',
+        ]
+        read_only_fields = ['uploaded_at', 'updated_at', 'file_name', 'file_size', 'document_type_display']

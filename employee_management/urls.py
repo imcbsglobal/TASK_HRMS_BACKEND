@@ -10,6 +10,8 @@ from .views import (
     CustomFieldDefinitionDetailView,
     EmployeeAssetListCreateView,
     EmployeeAssetDetailView,
+    EmployeeDocumentListCreateView,
+    EmployeeDocumentDetailView,
     UpcomingIncrementsView,
     SalaryIncrementHistoryView,
     SalaryIncrementHistoryDetailView,
@@ -41,6 +43,10 @@ urlpatterns = [
     # Asset endpoints
     path("employees/<int:employee_id>/assets/", EmployeeAssetListCreateView.as_view()),
     path("employees/<int:employee_id>/assets/<int:pk>/", EmployeeAssetDetailView.as_view()),
+
+    # Document endpoints
+    path("employees/<int:employee_id>/documents/", EmployeeDocumentListCreateView.as_view(), name="employee-document-list-create"),
+    path("employees/<int:employee_id>/documents/<int:pk>/", EmployeeDocumentDetailView.as_view(), name="employee-document-detail"),
 
     # Increment reminders (dashboard widget)
     path("upcoming-increments/", UpcomingIncrementsView.as_view(), name="upcoming-increments"),

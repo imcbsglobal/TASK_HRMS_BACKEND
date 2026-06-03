@@ -433,6 +433,74 @@ class EmployeeAsset(models.Model):
 
 
 # ---------------------------------------------------------------------------
+# Employee Document
+# ---------------------------------------------------------------------------
+class EmployeeDocument(models.Model):
+    """
+    Stores multiple documents attached to an employee (e.g. ID proof, offer letter,
+    certificates, etc.). Files are stored on the same Cloudflare R2 bucket under
+    the employee_documents/ prefix.
+    """
+
+    DOCUMENT_TYPE_CHOICES = [
+        ('id_proof',          'ID Proof'),
+        ('address_proof',     'Address Proof'),
+        ('educational',       'Educational Certificate'),
+        ('experience',        'Experience Certificate'),
+        ('offer_letter',      'Offer Letter'),
+        ('joining_letter',    'Joining Letter'),
+        ('contract',          'Contract / Agreement'),
+        ('nda',               'NDA'),
+        ('insurance',         'Insurance Document'),
+        ('medical',           'Medical Certificate'),
+        ('payslip',           'Payslip'),
+        ('bank_document',     'Bank Document'),
+        ('visa',              'Visa / Work Permit'),
+        ('passport',          'Passport Copy'),
+        ('other',             'Other'),
+    ]
+
+    employee      = models.ForeignKey(
+        Employee,
+        on_delete=models.CASCADE,
+        related_name='documents',
+    )
+    document_type = models.CharField(
+        max_length=30,
+        choices=DOCUMENT_TYPE_CHOICES,
+        default='other',
+    )
+    title         = models.CharField(max_length=255, help_text='Descriptive name for the document')
+    file          = models.FileField(
+        storage=R2EmployeeImageStorage(),
+        upload_to='employee_documents/',
+    )
+    notes         = models.TextField(blank=True)
+    uploaded_at   = models.DateTimeField(auto_now_add=True)
+    updated_at    = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-uploaded_at']
+
+    def __str__(self):
+        return f'{self.title} ({self.get_document_type_display()}) — {self.employee}'
+
+    @property
+    def file_name(self):
+        """Return just the original filename without the upload path."""
+        import os
+        return os.path.basename(self.file.name) if self.file else ''
+
+    @property
+    def file_size(self):
+        """Return file size in bytes; None if unavailable."""
+        try:
+            return self.file.size
+        except Exception:
+            return None
+
+
+# ---------------------------------------------------------------------------
 # Signals — auto-delete images from Cloudflare R2
 # ---------------------------------------------------------------------------
 from django.db.models.signals import post_delete, pre_save
@@ -460,3 +528,10 @@ def auto_delete_image_on_change(sender, instance, **kwargs):
     new_file = instance.profile_image
     if old_file and old_file != new_file:
         old_file.delete(save=False)
+
+
+@receiver(post_delete, sender=EmployeeDocument)
+def auto_delete_document_on_delete(sender, instance, **kwargs):
+    """Delete document file from R2 when the EmployeeDocument record is deleted."""
+    if instance.file:
+        instance.file.delete(save=False)

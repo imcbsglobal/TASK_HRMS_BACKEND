@@ -8,13 +8,8 @@ class Command(BaseCommand):
     def handle(self, *args, **kwargs):
         self.stdout.write('Seeding menus to match Sidebar.jsx...')
 
-        # Clear existing menus (optional - uncomment if you want fresh start)
-        # Menu.objects.all().delete()
-        # self.stdout.write(self.style.WARNING('Cleared existing menus'))
-
-        # Define menus that match EXACTLY with Sidebar.jsx
         menus_data = [
-            # 1. Dashboard — direct route, no children
+            # 1. Dashboard
             {
                 'name': 'Dashboard',
                 'slug': 'dashboard',
@@ -23,7 +18,7 @@ class Command(BaseCommand):
                 'order': 1,
                 'children': []
             },
-            # 2. Employee Management — direct route, no children
+            # 2. Employee Management
             {
                 'name': 'Employee Management',
                 'slug': 'employee-management',
@@ -32,90 +27,104 @@ class Command(BaseCommand):
                 'order': 2,
                 'children': []
             },
-            # 3. Interview Process — direct route, no children
+            # 3. Recruitment (parent with 4 children)
             {
-                'name': 'Interview Process',
-                'slug': 'interviews',
+                'name': 'Recruitment',
+                'slug': 'recruitment',
                 'icon': '💼',
-                'route': '/interviews',
+                'route': None,
                 'order': 3,
-                'children': []
+                'children': [
+                    {
+                        'name': 'Upload CV',
+                        'slug': 'recruitment-upload-cv',
+                        'icon': '📤',
+                        'route': '/recruitment/upload-cv',
+                        'order': 1,
+                    },
+                    {
+                        'name': 'Interview Process',
+                        'slug': 'interviews',
+                        'icon': '🤝',
+                        'route': '/interviews',
+                        'order': 2,
+                    },
+                    {
+                        'name': 'Offer Letter',
+                        'slug': 'recruitment-offer-letter',
+                        'icon': '📄',
+                        'route': '/recruitment/offer-letter',
+                        'order': 3,
+                    },
+                ]
             },
-            # 4. Payroll — direct route, no children
-            {
-                'name': 'Payroll',
-                'slug': 'payroll',
-                'icon': '💰',
-                'route': '/payroll',
-                'order': 4,
-                'children': []
-            },
-            # 5. Offboarding — direct route, no children
-            {
-                'name': 'Offboarding',
-                'slug': 'offboarding',
-                'icon': '🚪',
-                'route': '/offboarding',
-                'order': 5,
-                'children': []
-            },
-            # 6. Attendance — parent with 2 children
+            # 4. Attendance (parent with 2 children)
             {
                 'name': 'Attendance',
                 'slug': 'attendance',
                 'icon': '⏰',
                 'route': None,
-                'order': 6,
+                'order': 4,
                 'children': [
                     {
                         'name': 'Admin View',
                         'slug': 'attendance-admin',
                         'icon': '👨‍💼',
                         'route': '/attendance/admin',
-                        'order': 1
+                        'order': 1,
                     },
                     {
                         'name': 'My Attendance',
                         'slug': 'attendance-user',
                         'icon': '👤',
                         'route': '/attendance/user',
-                        'order': 2
+                        'order': 2,
                     },
                 ]
             },
+            # 5. Increment Log
             {
                 'name': 'Increment Log',
                 'slug': 'increment-log',
                 'icon': '📈',
                 'route': '/increment-log',
-                'order': 7,
+                'order': 5,
                 'children': []
             },
-            # 7. User Management — parent with 2 children
+            # 6. Payroll
             {
-                'name': 'User Management',
-                'slug': 'user-management',
-                'icon': '👤',
+                'name': 'Payroll',
+                'slug': 'payroll',
+                'icon': '💰',
+                'route': '/payroll',
+                'order': 6,
+                'children': []
+            },
+            # 7. Offboarding (parent with 2 children)
+            {
+                'name': 'Offboarding',
+                'slug': 'offboarding',
+                'icon': '🚪',
                 'route': None,
                 'order': 7,
                 'children': [
                     {
-                        'name': 'User List',
-                        'slug': 'user-list',
-                        'icon': '📋',
-                        'route': '/user-management/user-list',
-                        'order': 1
+                        'name': 'Offboarding',
+                        'slug': 'offboarding-list',
+                        'icon': '🚪',
+                        'route': '/offboarding',
+                        'order': 1,
                     },
                     {
-                        'name': 'User Control',
-                        'slug': 'user-control',
-                        'icon': '🔐',
-                        'route': '/user-management/user-control',
-                        'order': 2
+                        'name': 'Experience Certificate',
+                        'slug': 'experience-certificate',
+                        'icon': '🎓',
+                        'route': '/recruitment/experience-certificate',
+                        'order': 2,
                     },
                 ]
             },
-            # 8. Master — parent with 6 children
+            # 8. Master (parent with 8 children)
             {
                 'name': 'Master',
                 'slug': 'master',
@@ -128,62 +137,84 @@ class Command(BaseCommand):
                         'slug': 'department',
                         'icon': '🏢',
                         'route': '/master/department',
-                        'order': 1
+                        'order': 1,
                     },
                     {
                         'name': 'Leave Type',
                         'slug': 'leave-type',
                         'icon': '📋',
                         'route': '/master/leave-type',
-                        'order': 2
+                        'order': 2,
                     },
                     {
                         'name': 'Allowance',
                         'slug': 'allowance',
                         'icon': '💵',
                         'route': '/master/allowance',
-                        'order': 3
+                        'order': 3,
                     },
                     {
                         'name': 'Deduction',
                         'slug': 'deduction',
                         'icon': '📉',
                         'route': '/master/deduction',
-                        'order': 4
+                        'order': 4,
                     },
                     {
                         'name': 'Holiday',
                         'slug': 'holiday',
                         'icon': '🎉',
                         'route': '/master/holiday',
-                        'order': 5
+                        'order': 5,
                     },
                     {
                         'name': 'Announcements',
                         'slug': 'announcements',
                         'icon': '📢',
                         'route': '/master/announcements',
-                        'order': 6
+                        'order': 6,
                     },
                     {
                         'name': 'Job Title',
                         'slug': 'job-title',
                         'icon': '🧑‍💼',
                         'route': '/master/job-title',
-                        'order': 7
+                        'order': 7,
+                    },
+                    {
+                        'name': 'Section',
+                        'slug': 'section',
+                        'icon': '🗂️',
+                        'route': '/master/section',
+                        'order': 8,
                     },
                 ]
             },
-            # 9. WhatsApp Config — direct route, no children
+            # 9. User Management (parent with 2 children)
             {
-                'name': 'WhatsApp Config',
-                'slug': 'whatsapp-config',
-                'icon': '💬',
-                'route': '/whatsapp-config',
+                'name': 'User Management',
+                'slug': 'user-management',
+                'icon': '👤',
+                'route': None,
                 'order': 9,
-                'children': []
+                'children': [
+                    {
+                        'name': 'User List',
+                        'slug': 'user-list',
+                        'icon': '📋',
+                        'route': '/user-management/user-list',
+                        'order': 1,
+                    },
+                    {
+                        'name': 'User Control',
+                        'slug': 'user-control',
+                        'icon': '🔐',
+                        'route': '/user-management/user-control',
+                        'order': 2,
+                    },
+                ]
             },
-            # 10. Company Settings — direct route, no children
+            # 10. Company Settings
             {
                 'name': 'Company Settings',
                 'slug': 'company-settings',
@@ -191,6 +222,46 @@ class Command(BaseCommand):
                 'route': '/company-settings',
                 'order': 10,
                 'children': []
+            },
+            # 11. WhatsApp Config
+            {
+                'name': 'WhatsApp Config',
+                'slug': 'whatsapp-config',
+                'icon': '💬',
+                'route': '/whatsapp-config',
+                'order': 11,
+                'children': []
+            },
+            # 12. Settings (parent with 3 children)
+            {
+                'name': 'Settings',
+                'slug': 'settings',
+                'icon': '🔧',
+                'route': None,
+                'order': 12,
+                'children': [
+                    {
+                        'name': 'Payroll Settings',
+                        'slug': 'payroll-settings',
+                        'icon': '💳',
+                        'route': '/payroll-settings/basic-settings',
+                        'order': 1,
+                    },
+                    {
+                        'name': 'Geofence Settings',
+                        'slug': 'geofence-settings',
+                        'icon': '📍',
+                        'route': '/settings/geofence',
+                        'order': 2,
+                    },
+                    {
+                        'name': 'Yearly Calendar',
+                        'slug': 'yearly-calendar',
+                        'icon': '📅',
+                        'route': '/settings/yearly-calendar',
+                        'order': 3,
+                    },
+                ]
             },
         ]
 
@@ -200,7 +271,6 @@ class Command(BaseCommand):
         for menu_data in menus_data:
             children = menu_data.pop('children', [])
 
-            # Create or update parent menu
             parent_menu, created = Menu.objects.update_or_create(
                 slug=menu_data['slug'],
                 defaults=menu_data
@@ -213,7 +283,6 @@ class Command(BaseCommand):
                 updated_count += 1
                 self.stdout.write(self.style.WARNING(f'↻ Updated menu: {parent_menu.name}'))
 
-            # Create child menus
             for child_data in children:
                 child_data['parent'] = parent_menu
                 child_menu, child_created = Menu.objects.update_or_create(
@@ -234,23 +303,19 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f'Created: {created_count} | Updated: {updated_count}'))
         self.stdout.write(self.style.SUCCESS('=' * 60))
         self.stdout.write('')
-        self.stdout.write('Menu routes available:')
-        self.stdout.write('  • /dashboard')
-        self.stdout.write('  • /employees')
-        self.stdout.write('  • /interviews')
-        self.stdout.write('  • /payroll')
-        self.stdout.write('  • /offboarding')
-        self.stdout.write('  • /attendance/admin')
-        self.stdout.write('  • /attendance/user')
-        self.stdout.write('  • /increment-log')
-        self.stdout.write('  • /user-management/user-list')
-        self.stdout.write('  • /user-management/user-control')
-        self.stdout.write('  • /master/department')
-        self.stdout.write('  • /master/leave-type')
-        self.stdout.write('  • /master/allowance')
-        self.stdout.write('  • /master/deduction')
-        self.stdout.write('  • /master/holiday')
-        self.stdout.write('  • /master/announcements')
-        self.stdout.write('  • /master/job-title')
-        self.stdout.write('  • /whatsapp-config')
-        self.stdout.write('  • /company-settings')
+        self.stdout.write('All menu routes:')
+        routes = [
+            '/dashboard', '/employees',
+            '/recruitment/upload-cv', '/interviews', '/recruitment/offer-letter',
+            '/attendance/admin', '/attendance/user',
+            '/increment-log', '/payroll',
+            '/offboarding', '/recruitment/experience-certificate',
+            '/master/department', '/master/leave-type', '/master/allowance',
+            '/master/deduction', '/master/holiday', '/master/announcements',
+            '/master/job-title', '/master/section',
+            '/user-management/user-list', '/user-management/user-control',
+            '/company-settings', '/whatsapp-config',
+            '/payroll-settings/basic-settings', '/settings/geofence', '/settings/yearly-calendar',
+        ]
+        for r in routes:
+            self.stdout.write(f'  • {r}')

@@ -9,12 +9,13 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 
 from HR.models import Candidate
-from .models import Employee, Department, CustomFieldDefinition, SalaryIncrementHistory
+from .models import Employee, Department, CustomFieldDefinition, SalaryIncrementHistory, EmployeeDocument
 from .serializers import (
     EmployeeSerializer,
     DepartmentSerializer,
     CustomFieldDefinitionSerializer,
     SalaryIncrementHistorySerializer,
+    EmployeeDocumentSerializer,
 )
 
 User = get_user_model()
@@ -831,3 +832,86 @@ class UpcomingIncrementsView(APIView):
             })
 
         return Response(data)
+
+
+# ---------------------------------------------------------------------------
+# Employee Document CRUD
+# ---------------------------------------------------------------------------
+class EmployeeDocumentListCreateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get_employee(self, request, employee_id):
+        try:
+            return _employee_qs(request.user).get(pk=employee_id), None
+        except Employee.DoesNotExist:
+            return None, Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    def get(self, request, employee_id):
+        employee, err = self._get_employee(request, employee_id)
+        if err:
+            return err
+        docs = employee.documents.all()
+        return Response(EmployeeDocumentSerializer(docs, many=True, context={'request': request}).data)
+
+    def post(self, request, employee_id):
+        if request.user.role == 'USER':
+            return Response(
+                {"detail": "You do not have permission to upload documents."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        employee, err = self._get_employee(request, employee_id)
+        if err:
+            return err
+        data = request.data.copy()
+        data['employee'] = employee.id
+        serializer = EmployeeDocumentSerializer(data=data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class EmployeeDocumentDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get_document(self, request, employee_id, pk):
+        try:
+            employee = _employee_qs(request.user).get(pk=employee_id)
+        except Employee.DoesNotExist:
+            return None, Response({"error": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            doc = employee.documents.get(pk=pk)
+        except EmployeeDocument.DoesNotExist:
+            return None, Response({"error": "Document not found."}, status=status.HTTP_404_NOT_FOUND)
+        return doc, None
+
+    def get(self, request, employee_id, pk):
+        doc, err = self._get_document(request, employee_id, pk)
+        if err:
+            return err
+        return Response(EmployeeDocumentSerializer(doc, context={'request': request}).data)
+
+    def put(self, request, employee_id, pk):
+        if request.user.role == 'USER':
+            return Response(
+                {"detail": "You do not have permission to update documents."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        doc, err = self._get_document(request, employee_id, pk)
+        if err:
+            return err
+        serializer = EmployeeDocumentSerializer(doc, data=request.data, partial=True, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def delete(self, request, employee_id, pk):
+        if request.user.role not in ('SUPER_ADMIN', 'ADMIN'):
+            return Response(
+                {"detail": "You do not have permission to delete documents."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        doc, err = self._get_document(request, employee_id, pk)
+        if err:
+            return err
+        doc.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
