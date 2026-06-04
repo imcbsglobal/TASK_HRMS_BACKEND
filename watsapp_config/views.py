@@ -146,7 +146,29 @@ class WhatsAppTestView(APIView):
             )
 
         try:
-            if provider == 'ultramsg':
+            if provider == 'dxing':
+                # DXing: instance_id = account, api_token = secret, webhook_url = API URL
+                api_url = config.get('webhook_url', '').strip() or 'https://app.dxing.in/api/send/whatsapp'
+                resp = requests.get(
+                    api_url,
+                    params={
+                        'secret':    api_token,
+                        'account':   instance_id,
+                        'recipient': instance_id,   # send test to own account as a self-ping
+                        'type':      'text',
+                        'message':   'HRMS WhatsApp test — connection successful!',
+                        'priority':  '1',
+                    },
+                    timeout=10,
+                )
+                if resp.status_code == 200:
+                    return Response({'detail': 'DXing connection successful! Test message sent.'})
+                return Response(
+                    {'error': f"DXing returned {resp.status_code}: {resp.text}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            elif provider == 'ultramsg':
                 url  = f"https://api.ultramsg.com/{instance_id}/instance/status"
                 resp = requests.get(url, params={'token': api_token}, timeout=10)
                 if resp.status_code == 200:

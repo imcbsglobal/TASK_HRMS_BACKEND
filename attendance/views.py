@@ -56,6 +56,13 @@ except Exception:
 
 from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest, EmployeeFaceData, BreakRecord,SalaryAdvanceRequest
 from .geofence import validate_geofence
+
+# ── WhatsApp notifications (fire-and-forget, never raises) ───────────────────
+try:
+    from watsapp_config.notify import send_notification as _wa_notify
+except ImportError:
+    def _wa_notify(*args, **kwargs): pass  # graceful fallback if app not installed
+# ─────────────────────────────────────────────────────────────────────────────
 from .serializers import (
     AttendanceSerializer, CheckInSerializer, CheckOutSerializer,
     MonthlyStatsSerializer, TodayAttendanceSerializer,
@@ -343,6 +350,21 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             else:
                 return Response({'error': 'Already checked in today'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # ── WhatsApp: punch_in notification ───────────────────────────────────
+        ist_tz = pytz.timezone('Asia/Kolkata')
+        ci_local = attendance.check_in_time.astimezone(ist_tz)
+        _wa_notify(
+            admin_owner   = admin_owner,
+            purpose_key   = 'punch_in',
+            employee_user = user,
+            context       = {
+                'name': _get_full_name(user),
+                'time': ci_local.strftime('%I:%M %p'),
+                'date': str(ci_local.date()),
+            },
+        )
+        # ─────────────────────────────────────────────────────────────────────
+
         return Response({
             'message': 'Successfully checked in',
             'attendance': AttendanceSerializer(attendance).data
@@ -384,6 +406,23 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         if serializer.validated_data.get('notes'):
             attendance.notes = serializer.validated_data['notes']
         attendance.save()
+
+        # ── WhatsApp: punch_out notification ──────────────────────────────────
+        ist_tz = pytz.timezone('Asia/Kolkata')
+        co_local = attendance.check_out_time.astimezone(ist_tz) if attendance.check_out_time else timezone.now().astimezone(ist_tz)
+        attendance.calculate_hours()
+        _wa_notify(
+            admin_owner   = admin_owner,
+            purpose_key   = 'punch_out',
+            employee_user = user,
+            context       = {
+                'name':        _get_full_name(user),
+                'time':        co_local.strftime('%I:%M %p'),
+                'date':        str(co_local.date()),
+                'total_hours': str(attendance.total_hours),
+            },
+        )
+        # ─────────────────────────────────────────────────────────────────────
 
         return Response({
             'message': 'Successfully checked out',
@@ -890,6 +929,21 @@ class LateArrivalRequestViewSet(viewsets.ModelViewSet):
         )
         serializer.is_valid(raise_exception=True)
         instance = serializer.save(user=request.user, admin_owner=_get_admin_owner(request.user))
+
+        # ── WhatsApp: late_request notification ───────────────────────────────
+        _wa_notify(
+            admin_owner   = _get_admin_owner(request.user),
+            purpose_key   = 'late_request',
+            employee_user = request.user,
+            context       = {
+                'name':          _get_full_name(request.user),
+                'expected_time': str(instance.expected_arrival_time),
+                'date':          str(instance.date),
+                'reason':        instance.reason or '',
+            },
+        )
+        # ─────────────────────────────────────────────────────────────────────
+
         return Response(
             LateArrivalRequestSerializer(instance).data,
             status=status.HTTP_201_CREATED,
@@ -1023,6 +1077,30 @@ class LateArrivalRequestViewSet(viewsets.ModelViewSet):
         late_req.admin_notes = admin_notes
         late_req.save()
 
+        # ── WhatsApp: late_approved / late_rejected notification ──────────────
+        if action_type in ('approve', 'waive'):
+            _wa_notify(
+                admin_owner   = admin_owner,
+                purpose_key   = 'late_approved',
+                employee_user = late_req.user,
+                context       = {
+                    'name': _get_full_name(late_req.user),
+                    'date': str(late_req.date),
+                },
+            )
+        elif action_type == 'reject':
+            _wa_notify(
+                admin_owner   = admin_owner,
+                purpose_key   = 'late_rejected',
+                employee_user = late_req.user,
+                context       = {
+                    'name':        _get_full_name(late_req.user),
+                    'date':        str(late_req.date),
+                    'admin_notes': admin_notes or 'No notes provided.',
+                },
+            )
+        # ─────────────────────────────────────────────────────────────────────
+
         return Response({
             'message': message,
             'late_arrival_request': LateArrivalRequestSerializer(late_req).data,
@@ -1070,6 +1148,22 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         serializer = CreateLeaveRequestSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         leave_request = serializer.save(user=request.user, admin_owner=_get_admin_owner(request.user))
+
+        # ── WhatsApp: leave_request notification ──────────────────────────────
+        _wa_notify(
+            admin_owner   = _get_admin_owner(request.user),
+            purpose_key   = 'leave_request',
+            employee_user = request.user,
+            context       = {
+                'name':       _get_full_name(request.user),
+                'leave_type': leave_request.get_leave_type_display(),
+                'start_date': str(leave_request.start_date),
+                'end_date':   str(leave_request.end_date),
+                'reason':     leave_request.reason or '',
+            },
+        )
+        # ─────────────────────────────────────────────────────────────────────
+
         return Response(
             LeaveRequestSerializer(leave_request).data,
             status=status.HTTP_201_CREATED
@@ -1174,6 +1268,34 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         leave_request.reviewed_at = timezone.now()
         leave_request.admin_notes = admin_notes
         leave_request.save()
+
+        # ── WhatsApp: leave_approved / leave_rejected notification ────────────
+        if action_type in ('approve', 'waive'):
+            _wa_notify(
+                admin_owner   = admin_owner,
+                purpose_key   = 'leave_approved',
+                employee_user = leave_request.user,
+                context       = {
+                    'name':       _get_full_name(leave_request.user),
+                    'leave_type': leave_request.get_leave_type_display(),
+                    'start_date': str(leave_request.start_date),
+                    'end_date':   str(leave_request.end_date),
+                },
+            )
+        elif action_type == 'reject':
+            _wa_notify(
+                admin_owner   = admin_owner,
+                purpose_key   = 'leave_rejected',
+                employee_user = leave_request.user,
+                context       = {
+                    'name':        _get_full_name(leave_request.user),
+                    'leave_type':  leave_request.get_leave_type_display(),
+                    'start_date':  str(leave_request.start_date),
+                    'end_date':    str(leave_request.end_date),
+                    'admin_notes': admin_notes or 'No notes provided.',
+                },
+            )
+        # ─────────────────────────────────────────────────────────────────────
 
         return Response({
             'message': message,
@@ -1310,6 +1432,21 @@ class EarlyDepartureRequestViewSet(viewsets.ModelViewSet):
         )
         serializer.is_valid(raise_exception=True)
         instance = serializer.save(user=request.user, admin_owner=_get_admin_owner(request.user))
+
+        # ── WhatsApp: early_departure_request notification ────────────────────
+        _wa_notify(
+            admin_owner   = _get_admin_owner(request.user),
+            purpose_key   = 'early_departure_request',
+            employee_user = request.user,
+            context       = {
+                'name':          _get_full_name(request.user),
+                'expected_time': str(instance.expected_departure_time),
+                'date':          str(instance.date),
+                'reason':        instance.reason or '',
+            },
+        )
+        # ─────────────────────────────────────────────────────────────────────
+
         return Response(
             EarlyDepartureRequestSerializer(instance).data,
             status=status.HTTP_201_CREATED,
@@ -1447,6 +1584,30 @@ class EarlyDepartureRequestViewSet(viewsets.ModelViewSet):
         early_req.reviewed_at = timezone.now()
         early_req.admin_notes = admin_notes
         early_req.save()
+
+        # ── WhatsApp: early_departure_approved / rejected notification ────────
+        if action_type in ('approve', 'waive'):
+            _wa_notify(
+                admin_owner   = admin_owner,
+                purpose_key   = 'early_departure_approved',
+                employee_user = early_req.user,
+                context       = {
+                    'name': _get_full_name(early_req.user),
+                    'date': str(early_req.date),
+                },
+            )
+        elif action_type == 'reject':
+            _wa_notify(
+                admin_owner   = admin_owner,
+                purpose_key   = 'early_departure_rejected',
+                employee_user = early_req.user,
+                context       = {
+                    'name':        _get_full_name(early_req.user),
+                    'date':        str(early_req.date),
+                    'admin_notes': admin_notes or 'No notes provided.',
+                },
+            )
+        # ─────────────────────────────────────────────────────────────────────
 
         return Response({
             'message': message,
@@ -2606,6 +2767,21 @@ class SalaryAdvanceRequestViewSet(viewsets.ModelViewSet):
             user=request.user,
             admin_owner=_get_admin_owner(request.user),
         )
+
+        # ── WhatsApp: salary_advance_request notification ─────────────────────
+        _wa_notify(
+            admin_owner   = _get_admin_owner(request.user),
+            purpose_key   = 'salary_advance_request',
+            employee_user = request.user,
+            context       = {
+                'name':              _get_full_name(request.user),
+                'amount':            str(instance.amount),
+                'repayment_months':  str(instance.repayment_months),
+                'reason':            instance.reason or '',
+            },
+        )
+        # ─────────────────────────────────────────────────────────────────────
+
         return Response(
             SalaryAdvanceRequestSerializer(instance).data,
             status=status.HTTP_201_CREATED,
@@ -2671,6 +2847,30 @@ class SalaryAdvanceRequestViewSet(viewsets.ModelViewSet):
             'admin_notes', 'approved_amount', 'updated_at',
         ])
  
+        # ── WhatsApp: salary_advance_approved / rejected notification ─────────
+        if action_val == 'approve':
+            _wa_notify(
+                admin_owner   = _get_admin_owner(request.user),
+                purpose_key   = 'salary_advance_approved',
+                employee_user = instance.user,
+                context       = {
+                    'name':             _get_full_name(instance.user),
+                    'approved_amount':  str(instance.approved_amount),
+                    'repayment_months': str(instance.repayment_months),
+                },
+            )
+        else:
+            _wa_notify(
+                admin_owner   = _get_admin_owner(request.user),
+                purpose_key   = 'salary_advance_rejected',
+                employee_user = instance.user,
+                context       = {
+                    'name':        _get_full_name(instance.user),
+                    'admin_notes': admin_notes or 'No notes provided.',
+                },
+            )
+        # ─────────────────────────────────────────────────────────────────────
+
         return Response(
             SalaryAdvanceRequestSerializer(instance).data,
             status=status.HTTP_200_OK,

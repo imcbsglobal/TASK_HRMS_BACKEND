@@ -7,6 +7,7 @@ User = get_user_model()
 
 class WhatsAppConfig(models.Model):
     PROVIDER_CHOICES = [
+        ('dxing',    'DXing'),
         ('ultramsg', 'UltraMsg'),
         ('waapi',    'WaAPI'),
         ('twilio',   'Twilio'),
