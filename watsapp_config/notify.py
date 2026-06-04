@@ -144,6 +144,23 @@ DEFAULT_TEMPLATES = {
         "👤 {name} is absent today.\n"
         "📅 Date: {date}"
     ),
+    'wfh_request': (
+        "🏠 *Work From Home Request*\n"
+        "👤 {name} has requested to work from home.\n"
+        "📅 Date: {date}\n"
+        "📝 Reason: {reason}"
+    ),
+    'wfh_approved': (
+        "✅ *Work From Home Approved*\n"
+        "Dear {name}, your work from home request has been *approved*.\n"
+        "📅 Date: {date}"
+    ),
+    'wfh_rejected': (
+        "❌ *Work From Home Rejected*\n"
+        "Dear {name}, your work from home request has been *rejected*.\n"
+        "📅 Date: {date}\n"
+        "📝 Admin notes: {admin_notes}"
+    ),
 }
 
 # ── Per-purpose send defaults (used when no DB row exists yet) ────────────────
@@ -169,6 +186,10 @@ PURPOSE_DEFAULTS = {
     'salary_advance_request':    {'send_to_employee': False, 'send_to_admin': True},
     'salary_advance_approved':   {'send_to_employee': True,  'send_to_admin': False},
     'salary_advance_rejected':   {'send_to_employee': True,  'send_to_admin': False},
+    # WFH — admin gets request, employee gets result
+    'wfh_request':               {'send_to_employee': False, 'send_to_admin': True},
+    'wfh_approved':              {'send_to_employee': True,  'send_to_admin': False},
+    'wfh_rejected':              {'send_to_employee': True,  'send_to_admin': False},
     # Others default to employee-only (defined below as fallback)
 }
 
