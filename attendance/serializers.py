@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest, EmployeeFaceData, BreakRecord,SalaryAdvanceRequest
+from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest, EmployeeFaceData, BreakRecord, SalaryAdvanceRequest, WFHRequest
 from django.utils import timezone
 from datetime import datetime, timedelta
 import pytz
@@ -45,6 +45,7 @@ class AttendanceSerializer(serializers.ModelSerializer):
             'leave_type', 'leave_type_display',
             'total_break_minutes', 'break_records',
             'check_out_waived',
+            'is_wfh',
             # Tenant – injected by the view, never from client
             'admin_owner',
             'created_at', 'updated_at',
@@ -724,5 +725,90 @@ class SalaryAdvanceApprovalSerializer(serializers.Serializer):
         if not is_admin:
             raise serializers.ValidationError(
                 "Only admins can approve/reject salary advance requests."
+            )
+        return data
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WFH REQUEST SERIALIZERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class WFHRequestSerializer(serializers.ModelSerializer):
+    """Full read serializer – used in list / detail views."""
+    user_name = serializers.SerializerMethodField()
+    user_username = serializers.CharField(source='user.username', read_only=True)
+    reviewed_by_name = serializers.CharField(
+        source='reviewed_by.full_name', read_only=True, allow_null=True
+    )
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    date_formatted = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WFHRequest
+        fields = [
+            'id', 'user', 'user_name', 'user_username',
+            'date', 'date_formatted',
+            'reason', 'status', 'status_display',
+            'reviewed_by', 'reviewed_by_name', 'reviewed_at',
+            'admin_notes',
+            'admin_owner',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'user', 'status', 'reviewed_by', 'reviewed_at',
+            'created_at', 'updated_at',
+        ]
+        extra_kwargs = {
+            'admin_owner': {'write_only': True, 'required': False},
+        }
+
+    def get_user_name(self, obj):
+        full_name = (obj.user.full_name or "").strip()
+        return full_name if full_name else obj.user.username
+
+    def get_date_formatted(self, obj):
+        return obj.date.strftime('%d %b %Y') if obj.date else None
+
+
+class CreateWFHRequestSerializer(serializers.ModelSerializer):
+    """Write serializer – used when a user submits a new WFH request."""
+
+    class Meta:
+        model = WFHRequest
+        fields = ['date', 'reason']
+
+    def validate(self, data):
+        user = self.context['request'].user
+        date = data.get('date')
+
+        existing = WFHRequest.objects.filter(user=user, date=date).first()
+        if existing:
+            if existing.status == 'pending':
+                raise serializers.ValidationError(
+                    "You already have a pending WFH request for this date."
+                )
+            if existing.status == 'approved':
+                raise serializers.ValidationError(
+                    "A WFH request for this date has already been approved."
+                )
+            existing.delete()
+
+        return data
+
+
+class WFHApprovalSerializer(serializers.Serializer):
+    """Admin approves or rejects a WFH request."""
+    action = serializers.ChoiceField(choices=['approve', 'reject'])
+    admin_notes = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, data):
+        user = self.context['request'].user
+        is_admin = (
+            user.is_staff or user.is_superuser or
+            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+        )
+        if not is_admin:
+            raise serializers.ValidationError(
+                "Only admins can approve/reject WFH requests."
             )
         return data

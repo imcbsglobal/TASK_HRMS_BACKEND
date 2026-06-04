@@ -175,28 +175,6 @@ def _check_policy_violations(employee, year, month, policy_data, admin):
                 'deduction_amount': float(deduction_amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
             })
 
-    # ── Missed punch violations ───────────────────────────────────────────────
-    missed_qs = Attendance.objects.filter(
-        user=auth_user,
-        date__year=year,
-        date__month=month,
-        check_in_time__isnull=False,
-        check_out_time__isnull=True,
-        admin_owner=admin,
-    )
-    missed_qs = missed_qs.exclude(check_out_waived=True)
-    missed_count = missed_qs.count()
-    if missed_count > 0:
-        deduction_amount = per_half_hour * Decimal(str(missed_count))
-        violations.append({
-            'violation_type':   'missed_punch',
-            'description':      f"Missed check-out punch ({missed_count} times)",
-            'count':            missed_count,
-            'billable_count':   missed_count,
-            'action':           'warn_only',
-            'deduction_amount': float(deduction_amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
-        })
-
     return violations
 
 
@@ -257,6 +235,7 @@ def _get_attendance_summary(employee, year, month, total_days):
         'late_days':      0,
         'half_days':      0,
         'leave_days':     0,
+        'wfh_days':       0,
         'working_days':   0,
         'paid_days':      0,
         'leave_breakdown': {},
@@ -271,6 +250,7 @@ def _get_attendance_summary(employee, year, month, total_days):
             summary['late_days']    = att_qs.filter(status='late').count()
             summary['half_days']    = att_qs.filter(status='half_day').count()
             summary['leave_days']   = att_qs.filter(status='leave').count()
+            summary['wfh_days']     = att_qs.filter(is_wfh=True).count()
             summary['working_days'] = summary['present_days'] + summary['late_days'] + summary['half_days']
             summary['paid_days']    = summary['present_days'] + summary['late_days'] + summary['leave_days']
             summary['leave_breakdown'] = _get_leave_type_breakdown(employee, year, month)
@@ -357,7 +337,6 @@ def _policy_violation_label(violation_type):
     labels = {
         'late_arrival': 'Late Arrival',
         'early_departure': 'Early Departure',
-        'missed_punch': 'Missed Punch',
         'all': 'All Violations',
     }
     return labels.get(violation_type or 'all', str(violation_type).replace('_', ' ').title())
@@ -428,6 +407,21 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
     policy_data = policy_obj.policy_data if policy_obj else {}
     policy_violations = _check_policy_violations(employee, year, month, policy_data, admin_owner)
 
+    # ── WFH deduction (based on policy salary effect) ─────────────────────────
+    wfh_policy   = policy_data.get('attendance', {}).get('workFromHome', {})
+    wfh_enabled  = wfh_policy.get('enabled', False)
+    wfh_effect   = wfh_policy.get('salaryEffect', 'full_day')  # "full_day" or "half_day"
+    wfh_days     = att.get('wfh_days', 0)
+
+    if wfh_enabled and wfh_days > 0 and wfh_effect == 'half_day':
+        # Half-day WFH: deduct 0.5 day per WFH day
+        wfh_deduction = (
+            Decimal(str(wfh_days)) * per_day * Decimal('0.5')
+        ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    else:
+        # "full_day" or WFH disabled → no salary cut
+        wfh_deduction = Decimal('0.00')
+
     # ── Auto-compute PF & Overtime ────────────────────────────────────────────
     pf_amount,  pf_detail  = _calc_pf_amount(employee)
     ot_amount,  ot_detail  = _calc_overtime_amount(employee, total_days)
@@ -436,7 +430,7 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
 
     # ── Totals ────────────────────────────────────────────────────────────────
     total_allowances = Decimal(str(db_allowances_total)) + auto_allowances_total
-    total_deductions = att_deduction + Decimal(str(total_manual_deductions)) + policy_deductions_total
+    total_deductions = att_deduction + Decimal(str(total_manual_deductions)) + policy_deductions_total + wfh_deduction
 
     net_salary = (
         Decimal(str(basic_salary)) + total_allowances - total_deductions
@@ -447,6 +441,7 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
         'total_allowances':        str(total_allowances),
         'total_deductions':        str(total_deductions),
         'attendance_deduction':    str(att_deduction),
+        'wfh_deduction':           str(wfh_deduction),
         'manual_deductions_total': str(total_manual_deductions),
         'policy_deductions_total': str(policy_deductions_total),
         'net_salary':              str(net_salary),
@@ -462,10 +457,13 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
             'late_days':            att['late_days'],
             'half_days':            att['half_days'],
             'leave_days':           att['leave_days'],
+            'wfh_days':             att['wfh_days'],
+            'wfh_salary_effect':    wfh_effect if wfh_enabled else 'full_day',
             'working_days':         att['working_days'],
             'paid_days':            att['paid_days'],
             'per_day_salary':       str(per_day),
             'attendance_deduction': str(att_deduction),
+            'wfh_deduction':        str(wfh_deduction),
             'leave_breakdown':      att.get('leave_breakdown', {}),
         },
         'allowances': [

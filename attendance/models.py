@@ -35,6 +35,7 @@ class Attendance(models.Model):
     check_in_time = models.DateTimeField(null=True, blank=True)
     check_out_time = models.DateTimeField(null=True, blank=True)
     check_out_waived = models.BooleanField(default=False)
+    is_wfh = models.BooleanField(default=False, help_text='True if this attendance is for a work-from-home day.')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='absent')
     total_hours = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
     total_break_minutes = models.IntegerField(default=0, help_text='Total break duration in minutes for this day.')
@@ -439,3 +440,54 @@ class SalaryAdvanceRequest(models.Model):
             f"{self.user.username} – ₹{self.amount} "
             f"({self.status})"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WORK FROM HOME REQUEST
+# ─────────────────────────────────────────────────────────────────────────────
+
+class WFHRequest(models.Model):
+    STATUS_CHOICES = [
+        ('pending',   'Pending'),
+        ('approved',  'Approved'),
+        ('rejected',  'Rejected'),
+        ('cancelled', 'Cancelled'),
+    ]
+
+    # ── Tenant isolation ──────────────────────────────────────────────────────
+    admin_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='owned_wfh_requests',
+        null=True, blank=True,
+        help_text="The admin/tenant who owns this request.",
+    )
+    # ─────────────────────────────────────────────────────────────────────────
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='wfh_requests',
+    )
+    date = models.DateField(help_text="Date for which WFH is requested.")
+    reason = models.TextField(help_text="Reason for working from home.")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='reviewed_wfh_requests',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    admin_notes = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'WFH Request'
+        verbose_name_plural = 'WFH Requests'
+        unique_together = ['user', 'date']
+
+    def __str__(self):
+        return f"{self.user.username} – WFH {self.date} ({self.status})"

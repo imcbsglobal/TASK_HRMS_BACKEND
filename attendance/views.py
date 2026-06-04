@@ -54,7 +54,7 @@ except Exception:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest, EmployeeFaceData, BreakRecord,SalaryAdvanceRequest
+from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest, EmployeeFaceData, BreakRecord, SalaryAdvanceRequest, WFHRequest
 from .geofence import validate_geofence
 
 # ── WhatsApp notifications (fire-and-forget, never raises) ───────────────────
@@ -76,6 +76,7 @@ from .serializers import (
     BreakRecordSerializer,
     SalaryAdvanceRequestSerializer, CreateSalaryAdvanceRequestSerializer,
     SalaryAdvanceApprovalSerializer,
+    WFHRequestSerializer, CreateWFHRequestSerializer, WFHApprovalSerializer,
 )
 
 
@@ -2753,7 +2754,10 @@ class SalaryAdvanceRequestViewSet(viewsets.ModelViewSet):
         admin_owner = _get_admin_owner(user)
         qs = SalaryAdvanceRequest.objects.filter(admin_owner=admin_owner)
         if _is_admin(user):
-            return qs
+            status_filter = self.request.query_params.get('status')
+            if status_filter:
+                qs = qs.filter(status=status_filter)
+            return qs.order_by('-created_at')
         return qs.filter(user=user)
  
     # ── Create ────────────────────────────────────────────────────────────────
@@ -2916,3 +2920,212 @@ class SalaryAdvanceRequestViewSet(viewsets.ModelViewSet):
             'approved': qs.filter(status='approved').count(),
             'rejected': qs.filter(status='rejected').count(),
         })
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WFH REQUEST VIEWSET
+# ─────────────────────────────────────────────────────────────────────────────
+
+class WFHRequestViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for WFHRequest – tenant-isolated.
+
+    Users:
+      POST   /wfh-requests/              – submit a WFH request
+      GET    /wfh-requests/my-requests/  – list own requests
+      DELETE /wfh-requests/{id}/         – cancel own pending request
+
+    Admins:
+      GET    /wfh-requests/              – list all (filter ?status=pending)
+      GET    /wfh-requests/pending/      – pending only
+      GET    /wfh-requests/stats/        – stats
+      POST   /wfh-requests/{id}/review/  – approve or reject
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return CreateWFHRequestSerializer
+        if self.action == 'review':
+            return WFHApprovalSerializer
+        return WFHRequestSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        admin_owner = _get_admin_owner(user)
+        qs = WFHRequest.objects.filter(
+            admin_owner=admin_owner
+        ).select_related('user', 'reviewed_by')
+
+        if _is_admin(user):
+            status_filter = self.request.query_params.get('status')
+            user_filter = self.request.query_params.get('user_id')
+            if status_filter:
+                qs = qs.filter(status=status_filter)
+            if user_filter:
+                qs = qs.filter(user_id=user_filter)
+            return qs
+
+        return qs.filter(user=user)
+
+    def create(self, request, *args, **kwargs):
+        serializer = CreateWFHRequestSerializer(
+            data=request.data, context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        instance = serializer.save(
+            user=request.user,
+            admin_owner=_get_admin_owner(request.user)
+        )
+
+        # ── WhatsApp: wfh_request notification ────────────────────────────────
+        _wa_notify(
+            admin_owner   = _get_admin_owner(request.user),
+            purpose_key   = 'wfh_request',
+            employee_user = request.user,
+            context       = {
+                'name':   _get_full_name(request.user),
+                'date':   str(instance.date),
+                'reason': instance.reason or '',
+            },
+        )
+        # ─────────────────────────────────────────────────────────────────────
+
+        return Response(
+            WFHRequestSerializer(instance).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.user != request.user and not _is_admin(request.user):
+            return Response(
+                {'error': 'You cannot cancel this request.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        if instance.status != 'pending':
+            return Response(
+                {'error': 'Only pending requests can be cancelled.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        instance.status = 'cancelled'
+        instance.save(update_fields=['status', 'updated_at'])
+        return Response({'message': 'WFH request cancelled.'}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], url_path='my-requests')
+    def my_requests(self, request):
+        admin_owner = _get_admin_owner(request.user)
+        qs = WFHRequest.objects.filter(
+            user=request.user, admin_owner=admin_owner
+        ).order_by('-created_at')
+        return Response(WFHRequestSerializer(qs, many=True).data)
+
+    @action(detail=False, methods=['get'], url_path='pending')
+    def pending_requests(self, request):
+        if not _is_admin(request.user):
+            return Response(
+                {'error': 'Only admins can view pending requests.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        admin_owner = _get_admin_owner(request.user)
+        qs = WFHRequest.objects.filter(
+            admin_owner=admin_owner, status='pending'
+        ).select_related('user').order_by('-created_at')
+        return Response(WFHRequestSerializer(qs, many=True).data)
+
+    @action(detail=False, methods=['get'], url_path='stats')
+    def stats(self, request):
+        if not _is_admin(request.user):
+            return Response({'error': 'Admins only.'}, status=status.HTTP_403_FORBIDDEN)
+        admin_owner = _get_admin_owner(request.user)
+        qs = WFHRequest.objects.filter(admin_owner=admin_owner)
+        return Response({
+            'total':     qs.count(),
+            'pending':   qs.filter(status='pending').count(),
+            'approved':  qs.filter(status='approved').count(),
+            'rejected':  qs.filter(status='rejected').count(),
+            'cancelled': qs.filter(status='cancelled').count(),
+        })
+
+    @action(detail=True, methods=['post'], url_path='review')
+    def review(self, request, pk=None):
+        """Admin approves or rejects a WFH request."""
+        if not _is_admin(request.user):
+            return Response(
+                {'error': 'Only admins can review WFH requests.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        serializer = WFHApprovalSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+
+        wfh_req = self.get_object()
+        action_type = serializer.validated_data['action']
+
+        if wfh_req.status != 'pending':
+            return Response(
+                {'error': f'Cannot review a request that is already "{wfh_req.status}".'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        admin_notes = serializer.validated_data.get('admin_notes', '')
+        admin_owner = _get_admin_owner(request.user)
+
+        if action_type == 'approve':
+            wfh_req.status = 'approved'
+            message = 'WFH request approved successfully.'
+
+            # Mark the attendance record as WFH / present for that day
+            att_obj, created = Attendance.objects.get_or_create(
+                user=wfh_req.user,
+                date=wfh_req.date,
+                admin_owner=admin_owner,
+                defaults={
+                    'status': 'present',
+                    'is_wfh': True,
+                    'notes': f'Work from home approved – {wfh_req.reason}',
+                    'is_verified': True,
+                    'verified_by': request.user,
+                    'verified_at': timezone.now(),
+                },
+            )
+            if not created:
+                # Record already exists (employee checked in from home) — just flag it
+                att_obj.is_wfh = True
+                att_obj.notes = (att_obj.notes or '') + f'\n[WFH approved – {wfh_req.reason}]'
+                att_obj.save(update_fields=['is_wfh', 'notes', 'updated_at'])
+
+            # ── WhatsApp: wfh_approved notification ───────────────────────────
+            _wa_notify(
+                admin_owner   = admin_owner,
+                purpose_key   = 'wfh_approved',
+                employee_user = wfh_req.user,
+                context       = {
+                    'name':        _get_full_name(wfh_req.user),
+                    'date':        str(wfh_req.date),
+                    'admin_notes': admin_notes or '',
+                },
+            )
+        else:  # reject
+            wfh_req.status = 'rejected'
+            message = 'WFH request rejected.'
+
+            # ── WhatsApp: wfh_rejected notification ───────────────────────────
+            _wa_notify(
+                admin_owner   = admin_owner,
+                purpose_key   = 'wfh_rejected',
+                employee_user = wfh_req.user,
+                context       = {
+                    'name':        _get_full_name(wfh_req.user),
+                    'date':        str(wfh_req.date),
+                    'admin_notes': admin_notes or '',
+                },
+            )
+
+        wfh_req.reviewed_by = request.user
+        wfh_req.reviewed_at = timezone.now()
+        wfh_req.admin_notes = admin_notes
+        wfh_req.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'admin_notes', 'updated_at'])
+
+        return Response({'message': message, 'request': WFHRequestSerializer(wfh_req).data})

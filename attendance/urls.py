@@ -11,7 +11,8 @@ from .views import (
     LateArrivalRequestViewSet,
     EarlyDepartureRequestViewSet,
     FaceRecognitionViewSet,
-    SalaryAdvanceRequestViewSet
+    SalaryAdvanceRequestViewSet,
+    WFHRequestViewSet,
 )
 
 router = DefaultRouter()
@@ -20,6 +21,7 @@ router = DefaultRouter()
 router.register(r'leave-requests',           LeaveRequestViewSet,          basename='leave-requests')
 router.register(r'late-arrival-requests',    LateArrivalRequestViewSet,    basename='late-arrival-requests')
 router.register(r'early-departure-requests', EarlyDepartureRequestViewSet, basename='early-departure-requests')
+router.register(r'wfh-requests',             WFHRequestViewSet,            basename='wfh-requests')
 router.register(r'settings',                 AttendanceSettingsViewSet,    basename='attendance-settings')
 router.register(r'salary-advance-requests',  SalaryAdvanceRequestViewSet,  basename='salary-advance-requests') 
 router.register(r'face',                     FaceRecognitionViewSet,       basename='face')
