@@ -34,11 +34,85 @@ def _get_admin_owner(user):
 # POLICY VIOLATION CHECKER
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _check_policy_violations(employee, year, month, policy_data, admin):
+def _get_duty_times(employee, admin):
+    """
+    Return (duty_start_time, duty_end_time) for an employee.
+    Priority: employee-specific duty times → global AttendanceSettings.
+    Both returned as datetime.time objects (or None if not configured).
+    """
+    from attendance.models import AttendanceSettings
+    start = getattr(employee, 'duty_start_time', None)
+    end   = getattr(employee, 'duty_end_time', None)
+    if not start or not end:
+        settings_obj = AttendanceSettings.objects.filter(admin_owner=admin).order_by('-id').first()
+        if settings_obj:
+            start = start or settings_obj.office_start_time
+            end   = end   or settings_obj.office_end_time
+    return start, end
+
+
+def _minutes_late(actual_time, duty_start, grace_minutes=0):
+    """
+    How many minutes after (duty_start + grace) did the employee arrive?
+    actual_time and duty_start are datetime.time objects.
+    Returns 0 if within grace.
+    """
+    from datetime import datetime as _dt
+    base = _dt(2000, 1, 1)
+    actual_dt = base.replace(hour=actual_time.hour, minute=actual_time.minute, second=0)
+    limit_dt  = base.replace(hour=duty_start.hour,  minute=duty_start.minute, second=0)
+    delta = (actual_dt - limit_dt).total_seconds() / 60 + grace_minutes  # negative = early (ok)
+    return max(0, delta - grace_minutes)
+
+
+def _minutes_early(actual_time, duty_end, buffer_minutes=0):
+    """
+    How many minutes before (duty_end - buffer) did the employee leave?
+    Returns 0 if within buffer.
+    """
+    from datetime import datetime as _dt
+    base = _dt(2000, 1, 1)
+    actual_dt = base.replace(hour=actual_time.hour, minute=actual_time.minute, second=0)
+    limit_dt  = base.replace(hour=duty_end.hour,    minute=duty_end.minute,    second=0)
+    delta = (limit_dt - actual_dt).total_seconds() / 60  # positive = left early
+    return max(0, delta - buffer_minutes)
+
+
+def _tier_action_for_minutes(tiers, minutes):
+    """
+    Given a sorted list of tiers [{fromMin, toMin, action}] and actual minutes,
+    return the matching tier's action (or 'warn_only' if no tier matches).
+    """
+    for tier in tiers:
+        from_min = tier.get('fromMin') or 0
+        to_min   = tier.get('toMin')   # None = open-ended
+        if minutes >= from_min and (to_min is None or minutes < to_min):
+            return tier.get('action', 'warn_only')
+    return 'warn_only'
+
+
+def _check_policy_violations(employee, year, month, policy_data, admin, total_days=None):
     """
     Compare an employee's attendance for the given month against policy_data.
+
+    Uses employee-specific duty_start_time / duty_end_time (falls back to
+    global AttendanceSettings) to calculate the actual minutes late / early
+    for each request, then maps those minutes to the correct policy tier.
+
+    per_day is computed from the employee's monthly salary divided by
+    total_days (working days after holidays).  If total_days is not supplied
+    it is recalculated here so the function stays self-contained.
+
+    Deduction mapping (per billable occurrence):
+      half_day_cut        → per_day / 2
+      full_day_cut        → per_day
+      full_absence_marked → per_day          (treat as one full absent day)
+      half_hour_cut       → per_day / total_duty_hours_per_day / 2
+      warn_only / no_action → 0
+
     Returns a list of violation dicts:
-      [{ violation_type, description, count, deduction_amount }, ...]
+      [{ violation_type, description, count, billable_count,
+         action, fine, deduction_amount, per_day_salary, requests }, ...]
     Returns an empty list when the employee is within all policy limits.
     """
     from login.models import User
@@ -51,128 +125,223 @@ def _check_policy_violations(employee, year, month, policy_data, admin):
     if not auth_user:
         return violations
 
+    duty_start, duty_end = _get_duty_times(employee, admin)
+
+    # ── Per-day salary — must match _build_payroll_dict ───────────────────────
     basic_salary = Decimal(str(employee.salary))
-    calendar_days = calendar.monthrange(year, month)[1]
-    per_day = (basic_salary / Decimal(str(calendar_days))).quantize(
+    if total_days is None:
+        # Recalculate working days (calendar days minus holidays)
+        calendar_days_count = calendar.monthrange(year, month)[1]
+        from master.models import Holiday as _Holiday
+        hol_qs = _Holiday.objects.filter(date__year=year, date__month=month, is_active=True)
+        if admin:
+            hol_qs = hol_qs.filter(admin_owner=admin)
+        holiday_count = hol_qs.count()
+        total_days = max(1, calendar_days_count - holiday_count)
+
+    per_day = (basic_salary / Decimal(str(total_days))).quantize(
         Decimal('0.01'), rounding=ROUND_HALF_UP
     )
-    per_half_day = (per_day / Decimal('2')).quantize(
-        Decimal('0.01'), rounding=ROUND_HALF_UP
-    )
-    per_half_hour = (per_day / Decimal('16')).quantize(
+    per_half_day = (per_day / Decimal('2')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+    # Half-hour cut: 30-min proportion of the actual duty-hour window
+    # e.g. 9-hr shift → per_day / 9hrs / 2 = per_day / 18
+    # Fallback to 8 h if no duty times configured.
+    if duty_start and duty_end:
+        from datetime import datetime as _dt
+        _base = _dt(2000, 1, 1)
+        duty_minutes = (
+            _base.replace(hour=duty_end.hour,   minute=duty_end.minute)
+            - _base.replace(hour=duty_start.hour, minute=duty_start.minute)
+        ).total_seconds() / 60
+        duty_hours = max(Decimal(str(duty_minutes / 60)), Decimal('1'))
+    else:
+        duty_hours = Decimal('8')
+
+    # 30 min / total duty minutes as a fraction of per_day
+    per_half_hour = (per_day * Decimal('30') / (duty_hours * Decimal('60'))).quantize(
         Decimal('0.01'), rounding=ROUND_HALF_UP
     )
 
     def _policy_fine_amount(policy, billable_count):
-        fine = policy.get('fine', {}) or {}
+        fine  = policy.get('fine', {}) or {}
         value = Decimal(str(fine.get('value') or '0'))
         if value <= 0 or billable_count <= 0:
             return None
-
         if fine.get('type') == 'percentage':
-            per_occurrence = (basic_salary * value / Decimal('100')).quantize(
-                Decimal('0.01'), rounding=ROUND_HALF_UP
-            )
+            per_occ = (basic_salary * value / Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         else:
-            per_occurrence = value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            per_occ = value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        return (per_occ * Decimal(str(billable_count))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
-        return (per_occurrence * Decimal(str(billable_count))).quantize(
-            Decimal('0.01'), rounding=ROUND_HALF_UP
-        )
+    def _deduction_for_action(action, count):
+        """
+        Map a tier action to a rupee deduction per billable occurrence.
+        All amounts derive from per_day so they are consistent with the
+        rest of the payroll calculation.
+        """
+        cnt = Decimal(str(count))
+        if action == 'half_day_cut':
+            return (per_half_day * cnt).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        if action in ('full_day_cut', 'full_absence_marked'):
+            return (per_day * cnt).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        if action == 'half_hour_cut':
+            return (per_half_hour * cnt).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        # warn_only, no_action, or unknown → no monetary deduction
+        return Decimal('0')
 
     # ── Late Arrival violations ───────────────────────────────────────────────
     la_policy = policy_data.get('attendance', {}).get('lateArrival', {})
     if la_policy.get('enabled', True):
-        forgiven = int(la_policy.get('forgivenLatesPerMonth', 3))
-        habitual_threshold = 4  # 4th+ late in a month = habitual
+        forgiven          = int(la_policy.get('forgivenLatesPerMonth', 3))
+        grace_min         = int(la_policy.get('gracePeriodMin', 0))
+        habitual_threshold = int(la_policy.get('habitualThreshold', 4))
+        tiers             = la_policy.get('tiers', [])
+        habitual_action   = la_policy.get('habitualLate', 'full_day_cut')
 
         late_qs = LateArrivalRequest.objects.filter(
             user=auth_user,
             date__year=year,
             date__month=month,
             admin_owner=admin,
-        )
-        late_qs = late_qs.exclude(status__in=['waived', 'rejected', 'cancelled'])
-        late_count = late_qs.count()
-        billable = max(0, late_count - forgiven)
+        ).exclude(status__in=['rejected', 'cancelled']).order_by('date')
+
+        late_requests = list(late_qs)
+        late_count    = len(late_requests)
+        billable      = max(0, late_count - forgiven)
+
+        # Annotate each request with minutes_late and tier action
+        annotated_late = []
+        for req in late_requests:
+            mins = 0
+            if duty_start and req.expected_arrival_time:
+                mins = _minutes_late(req.expected_arrival_time, duty_start, grace_min)
+            act = _tier_action_for_minutes(tiers, mins) if tiers else 'warn_only'
+            annotated_late.append({
+                'id':             req.id,
+                'date':           str(req.date),
+                'arrival_time':   str(req.expected_arrival_time),
+                'minutes_late':   round(mins),
+                'status':         req.status,
+                'reason':         req.reason,
+                'tier_action':    act,
+                'is_waived':      req.status == 'waived',
+            })
 
         if billable > 0:
-            tiers = la_policy.get('tiers', [])
-            habitual_action = la_policy.get('habitualLate', 'full_day_cut')
+            # For the overall month deduction, use the worst (most severe) tier
+            # among the billable requests (the ones beyond the forgiven count)
+            billable_reqs = [r for r in annotated_late if not r['is_waived']]
+            # Sort by minutes so we pick deductions for the most-late ones
+            billable_reqs_sorted = sorted(billable_reqs, key=lambda x: x['minutes_late'], reverse=True)
+            billable_for_deduct  = billable_reqs_sorted[:billable]
 
             if late_count >= habitual_threshold:
                 action = habitual_action
-                desc = f"Habitual late arrival ({late_count} times, {forgiven} forgiven)"
+                desc   = f"Habitual late arrival ({late_count} times, {forgiven} forgiven, {billable} billable)"
             elif tiers:
-                tier = tiers[min(billable - 1, len(tiers) - 1)]
-                action = tier.get('action', 'warn_only')
-                desc = f"Late arrival ({late_count} times, {forgiven} forgiven, {billable} billable)"
+                # Use the tier of the worst billable request
+                worst_mins = billable_for_deduct[0]['minutes_late'] if billable_for_deduct else 0
+                action = _tier_action_for_minutes(tiers, worst_mins)
+                desc   = f"Late arrival ({late_count} times, {forgiven} forgiven, {billable} billable)"
             else:
                 action = 'warn_only'
-                desc = f"Late arrival ({late_count} times)"
+                desc   = f"Late arrival ({late_count} times)"
 
             deduction_amount = _policy_fine_amount(la_policy, billable)
             if deduction_amount is None:
-                deduction_amount = Decimal('0')
-                if action == 'half_day_cut':
-                    deduction_amount = per_half_day * Decimal(str(billable))
-                elif action == 'full_day_cut':
-                    deduction_amount = per_day * Decimal(str(billable))
-                elif action == 'half_hour_cut':
-                    deduction_amount = per_half_hour * Decimal(str(billable))
-            # warn_only / no_action → 0
+                deduction_amount = _deduction_for_action(action, billable)
 
             violations.append({
-                'violation_type':   'late_arrival',
-                'description':      desc,
-                'count':            late_count,
-                'billable_count':   billable,
-                'action':           action,
-                'fine':             la_policy.get('fine', {}),
-                'deduction_amount': float(deduction_amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
+                'violation_type':     'late_arrival',
+                'description':        desc,
+                'count':              late_count,
+                'billable_count':     billable,
+                'forgiven':           forgiven,
+                'action':             action,
+                'fine':               la_policy.get('fine', {}),
+                'duty_start':         str(duty_start) if duty_start else None,
+                'grace_minutes':      grace_min,
+                'per_day_salary':     float(per_day),
+                'per_half_day_salary': float(per_half_day),
+                'per_half_hour_salary': float(per_half_hour),
+                'total_days':         total_days,
+                'deduction_amount':   float(deduction_amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
+                'requests':           annotated_late,
             })
 
     # ── Early Departure violations ────────────────────────────────────────────
     ed_policy = policy_data.get('attendance', {}).get('earlyDeparture', {})
     if ed_policy.get('enabled', True):
         forgiven_early = int(ed_policy.get('forgivenEarlyPerMonth', 2))
+        buffer_min     = int(ed_policy.get('earlyBufferMin', 0))
+        ed_tiers       = ed_policy.get('tiers', [])
+        default_action = ed_policy.get('unapprovedEarlyLeave', 'half_hour_cut')
 
         early_qs = EarlyDepartureRequest.objects.filter(
             user=auth_user,
             date__year=year,
             date__month=month,
             admin_owner=admin,
-        )
-        early_qs = early_qs.exclude(status__in=['waived', 'rejected', 'cancelled'])
-        early_count = early_qs.count()
+        ).exclude(status__in=['rejected', 'cancelled']).order_by('date')
+
+        early_requests = list(early_qs)
+        early_count    = len(early_requests)
         billable_early = max(0, early_count - forgiven_early)
 
+        annotated_early = []
+        for req in early_requests:
+            mins = 0
+            if duty_end and req.expected_departure_time:
+                mins = _minutes_early(req.expected_departure_time, duty_end, buffer_min)
+            act = _tier_action_for_minutes(ed_tiers, mins) if ed_tiers else default_action
+            annotated_early.append({
+                'id':               req.id,
+                'date':             str(req.date),
+                'departure_time':   str(req.expected_departure_time),
+                'minutes_early':    round(mins),
+                'status':           req.status,
+                'reason':           req.reason,
+                'tier_action':      act,
+                'is_waived':        req.status == 'waived',
+            })
+
         if billable_early > 0:
-            ed_tiers = ed_policy.get('tiers', [])
+            billable_early_reqs  = [r for r in annotated_early if not r['is_waived']]
+            early_sorted         = sorted(billable_early_reqs, key=lambda x: x['minutes_early'], reverse=True)
+            billable_for_deduct  = early_sorted[:billable_early]
+
             if ed_tiers:
-                tier = ed_tiers[min(billable_early - 1, len(ed_tiers) - 1)]
-                action = tier.get('action', 'warn_only')
+                worst_mins = billable_for_deduct[0]['minutes_early'] if billable_for_deduct else 0
+                action = _tier_action_for_minutes(ed_tiers, worst_mins)
             else:
-                action = ed_policy.get('unapprovedEarlyLeave', 'half_hour_cut')
+                action = default_action
+
+            desc = (
+                f"Early departure ({early_count} times, {forgiven_early} forgiven, "
+                f"{billable_early} billable)"
+            )
 
             deduction_amount = _policy_fine_amount(ed_policy, billable_early)
             if deduction_amount is None:
-                deduction_amount = Decimal('0')
-                if action == 'half_day_cut':
-                    deduction_amount = per_half_day * Decimal(str(billable_early))
-                elif action == 'full_day_cut':
-                    deduction_amount = per_day * Decimal(str(billable_early))
-                elif action in ('half_hour_cut', 'full_absence_marked'):
-                    deduction_amount = per_half_hour * Decimal(str(billable_early))
+                deduction_amount = _deduction_for_action(action, billable_early)
 
             violations.append({
-                'violation_type':   'early_departure',
-                'description':      f"Early departure ({early_count} times, {forgiven_early} forgiven, {billable_early} billable)",
-                'count':            early_count,
-                'billable_count':   billable_early,
-                'action':           action,
-                'fine':             ed_policy.get('fine', {}),
-                'deduction_amount': float(deduction_amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
+                'violation_type':     'early_departure',
+                'description':        desc,
+                'count':              early_count,
+                'billable_count':     billable_early,
+                'forgiven':           forgiven_early,
+                'action':             action,
+                'fine':               ed_policy.get('fine', {}),
+                'duty_end':           str(duty_end) if duty_end else None,
+                'buffer_minutes':     buffer_min,
+                'per_day_salary':     float(per_day),
+                'per_half_day_salary': float(per_half_day),
+                'per_half_hour_salary': float(per_half_hour),
+                'total_days':         total_days,
+                'deduction_amount':   float(deduction_amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
+                'requests':           annotated_early,
             })
 
     return violations
@@ -405,7 +574,7 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
 
     policy_obj = PayrollPolicy.objects.filter(admin_owner=admin_owner).first() if admin_owner else None
     policy_data = policy_obj.policy_data if policy_obj else {}
-    policy_violations = _check_policy_violations(employee, year, month, policy_data, admin_owner)
+    policy_violations = _check_policy_violations(employee, year, month, policy_data, admin_owner, total_days=total_days)
 
     # ── WFH deduction (based on policy salary effect) ─────────────────────────
     wfh_policy   = policy_data.get('attendance', {}).get('workFromHome', {})
@@ -603,6 +772,7 @@ class PayrollViewSet(viewsets.ModelViewSet):
             'year': year, 'month': month, 'month_name': dict(Payroll.MONTH_CHOICES).get(month, ''),
             'basic_salary': data['basic_salary'], 'total_allowances': data['total_allowances'],
             'total_deductions': data['total_deductions'], 'attendance_deduction': data['attendance_deduction'],
+            'wfh_deduction': data.get('wfh_deduction', '0.00'),
             'manual_deductions_total': data['manual_deductions_total'], 'net_salary': data['net_salary'],
             'policy_deductions_total': data['policy_deductions_total'],
             'total_days_in_month': data['total_days_in_month'], 'total_working_days': data['total_working_days'],
@@ -677,6 +847,14 @@ class PayrollViewSet(viewsets.ModelViewSet):
 
         policy_data = policy_obj.policy_data if policy_obj else {}
 
+        # Pre-compute working days (calendar days minus holidays) — shared across employees
+        from master.models import Holiday as _HolidayPV
+        _cal_days = calendar.monthrange(year, month)[1]
+        _hol_qs = _HolidayPV.objects.filter(date__year=year, date__month=month, is_active=True)
+        if admin:
+            _hol_qs = _hol_qs.filter(admin_owner=admin)
+        _total_days = max(1, _cal_days - _hol_qs.count())
+
         # Fetch all employees for this tenant
         emp_qs = Employee.objects.all()
         if user.role != 'SUPER_ADMIN':
@@ -687,8 +865,9 @@ class PayrollViewSet(viewsets.ModelViewSet):
         violations = []
 
         for employee in emp_qs.select_related('department'):
-            emp_violations = _check_policy_violations(employee, year, month, policy_data, admin)
+            emp_violations = _check_policy_violations(employee, year, month, policy_data, admin, total_days=_total_days)
             if emp_violations:
+                duty_start, duty_end = _get_duty_times(employee, admin)
                 decision_names = set(
                     _policy_decision_qs(employee, year, month, admin)
                     .values_list('deduction_name', flat=True)
@@ -712,6 +891,8 @@ class PayrollViewSet(viewsets.ModelViewSet):
                         'position':    employee.position,
                         'department':  employee.department.name if employee.department else '',
                         'salary':      str(employee.salary),
+                        'duty_start':  str(duty_start) if duty_start else None,
+                        'duty_end':    str(duty_end)   if duty_end   else None,
                     },
                     'violations':       emp_violations,
                     'total_deduction':  str(sum(v['deduction_amount'] for v in emp_violations)),
@@ -723,7 +904,187 @@ class PayrollViewSet(viewsets.ModelViewSet):
 
         return Response(violations, status=status.HTTP_200_OK)
 
-    @action(detail=False, methods=['post'], url_path='apply-policy-deduction')
+    @action(detail=False, methods=['get'], url_path='daily-violations')
+    def daily_violations(self, request):
+        """
+        GET /api/payroll/daily-violations/?date=YYYY-MM-DD
+
+        Returns every employee who has a late/early request on the given date,
+        annotated with:
+          - their request details (minutes late/early, tier action)
+          - whether the monthly policy threshold is already breached (policy_hit=true)
+          - if policy_hit, the suggested deduction and existing decision (pending/waived/deducted)
+
+        This powers the "Daily" tab of Penalty Review.
+        """
+        date_str = request.query_params.get('date')
+        if not date_str:
+            return Response({'error': 'date query param is required (YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            from datetime import date as _date
+            query_date = _date.fromisoformat(date_str)
+        except ValueError:
+            return Response({'error': 'Invalid date format. Use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        year  = query_date.year
+        month = query_date.month
+        user  = request.user
+        admin = _get_admin_owner(user)
+
+        from master.models import PayrollPolicy
+        from attendance.models import LateArrivalRequest, EarlyDepartureRequest
+        from login.models import User as AuthUser
+
+        policy_obj  = PayrollPolicy.objects.filter(admin_owner=admin).first() if admin else None
+        policy_data = policy_obj.policy_data if policy_obj else {}
+
+        la_policy  = policy_data.get('attendance', {}).get('lateArrival',    {})
+        ed_policy  = policy_data.get('attendance', {}).get('earlyDeparture', {})
+
+        # Pre-compute working days for this month (same as _build_payroll_dict)
+        from master.models import Holiday as _HolidayDV
+        _cal_days_dv = calendar.monthrange(year, month)[1]
+        _hol_qs_dv = _HolidayDV.objects.filter(date__year=year, date__month=month, is_active=True)
+        if admin:
+            _hol_qs_dv = _hol_qs_dv.filter(admin_owner=admin)
+        _total_days_dv = max(1, _cal_days_dv - _hol_qs_dv.count())
+
+        # Fetch approved (and waived) late and early requests for this day.
+        # Only approved/waived requests are payroll-relevant — pending/rejected/cancelled
+        # are excluded so the daily report reflects actual attendance impact.
+        late_day_qs  = LateArrivalRequest.objects.filter(
+            date=query_date, admin_owner=admin,
+            status__in=['approved', 'waived'],
+        ).select_related('user').order_by('date')
+        early_day_qs = EarlyDepartureRequest.objects.filter(
+            date=query_date, admin_owner=admin,
+            status__in=['approved', 'waived'],
+        ).select_related('user').order_by('date')
+
+        # Build a map: auth_user_id → employee record
+        emp_qs = Employee.objects.all()
+        if user.role != 'SUPER_ADMIN':
+            if admin is None:
+                return Response([], status=status.HTTP_200_OK)
+            emp_qs = emp_qs.filter(admin_owner=admin)
+
+        emp_by_email = {emp.email.lower(): emp for emp in emp_qs.select_related('department')}
+
+        # Collect unique auth users who have a request today
+        auth_user_ids = set(
+            list(late_day_qs.values_list('user_id', flat=True)) +
+            list(early_day_qs.values_list('user_id', flat=True))
+        )
+
+        result = []
+
+        for auth_uid in auth_user_ids:
+            try:
+                auth_u = AuthUser.objects.get(pk=auth_uid)
+            except AuthUser.DoesNotExist:
+                continue
+
+            employee = emp_by_email.get((auth_u.email or '').lower())
+            if not employee:
+                continue
+
+            duty_start, duty_end = _get_duty_times(employee, admin)
+
+            grace_min  = int(la_policy.get('gracePeriodMin',  0))
+            buffer_min = int(ed_policy.get('earlyBufferMin',  0))
+            la_tiers   = la_policy.get('tiers', [])
+            ed_tiers   = ed_policy.get('tiers', [])
+
+            # -- Today's requests for this employee --
+            emp_late  = [r for r in late_day_qs  if r.user_id == auth_uid]
+            emp_early = [r for r in early_day_qs if r.user_id == auth_uid]
+
+            late_items = []
+            for req in emp_late:
+                mins = 0
+                if duty_start and req.expected_arrival_time:
+                    mins = _minutes_late(req.expected_arrival_time, duty_start, grace_min)
+                act = _tier_action_for_minutes(la_tiers, mins) if la_tiers else 'warn_only'
+                late_items.append({
+                    'id':           req.id,
+                    'date':         str(req.date),
+                    'arrival_time': str(req.expected_arrival_time),
+                    'minutes_late': round(mins),
+                    'status':       req.status,
+                    'reason':       req.reason,
+                    'admin_notes':  req.admin_notes,
+                    'tier_action':  act,
+                    'is_waived':    req.status == 'waived',
+                    'type':         'late',
+                })
+
+            early_items = []
+            for req in emp_early:
+                mins = 0
+                if duty_end and req.expected_departure_time:
+                    mins = _minutes_early(req.expected_departure_time, duty_end, buffer_min)
+                act = _tier_action_for_minutes(ed_tiers, mins) if ed_tiers else ed_policy.get('unapprovedEarlyLeave', 'warn_only')
+                early_items.append({
+                    'id':               req.id,
+                    'date':             str(req.date),
+                    'departure_time':   str(req.expected_departure_time),
+                    'minutes_early':    round(mins),
+                    'status':           req.status,
+                    'reason':           req.reason,
+                    'admin_notes':      req.admin_notes,
+                    'tier_action':      act,
+                    'is_waived':        req.status == 'waived',
+                    'type':             'early',
+                })
+
+            # -- Monthly violation check (to know if policy threshold is breached) --
+            monthly_violations = _check_policy_violations(employee, year, month, policy_data, admin, total_days=_total_days_dv)
+
+            total_monthly_deduction = sum(v['deduction_amount'] for v in monthly_violations)
+            policy_hit = any(v['billable_count'] > 0 and v['deduction_amount'] > 0 for v in monthly_violations)
+
+            # Check existing deduction/waiver decisions for this month
+            decision_names = set(
+                _policy_decision_qs(employee, year, month, admin)
+                .values_list('deduction_name', flat=True)
+            )
+            for v in monthly_violations:
+                vtype = v.get('violation_type') or 'all'
+                ded_name  = _policy_decision_name('Deduction', vtype, month, year)
+                waiv_name = _policy_decision_name('Waiver',    vtype, month, year)
+                if ded_name  in decision_names: v['decision_status'] = 'approved_deduct'
+                elif waiv_name in decision_names: v['decision_status'] = 'waived'
+                else: v['decision_status'] = 'pending'
+
+            already_applied = any(v.get('decision_status') == 'approved_deduct' for v in monthly_violations)
+            already_waived  = any(v.get('decision_status') == 'waived'          for v in monthly_violations)
+
+            result.append({
+                'employee': {
+                    'id':           employee.id,
+                    'employee_id':  employee.employee_id,
+                    'name':         f"{employee.first_name} {employee.last_name}",
+                    'email':        employee.email,
+                    'position':     employee.position,
+                    'department':   employee.department.name if employee.department else '',
+                    'salary':       str(employee.salary),
+                    'duty_start':   str(duty_start) if duty_start else None,
+                    'duty_end':     str(duty_end)   if duty_end   else None,
+                },
+                'date':               date_str,
+                'late_requests':      late_items,
+                'early_requests':     early_items,
+                'policy_hit':         policy_hit,
+                'monthly_violations': monthly_violations,
+                'total_deduction':    str(round(total_monthly_deduction, 2)),
+                'already_applied':    already_applied,
+                'already_waived':     already_waived,
+                'year':               year,
+                'month':              month,
+            })
+
+        return Response(result, status=status.HTTP_200_OK)
     def apply_policy_deduction(self, request):
         """
         POST /api/payroll/apply-policy-deduction/

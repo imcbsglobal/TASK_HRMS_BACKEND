@@ -252,6 +252,7 @@ class LateArrivalRequestSerializer(serializers.ModelSerializer):
     """Full read serializer – used in list/detail views."""
     user_name = serializers.SerializerMethodField()
     user_username = serializers.CharField(source='user.username', read_only=True)
+    user_profile_image = serializers.SerializerMethodField()
     reviewed_by_name = serializers.CharField(
         source='reviewed_by.full_name', read_only=True, allow_null=True
     )
@@ -262,7 +263,7 @@ class LateArrivalRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = LateArrivalRequest
         fields = [
-            'id', 'user', 'user_name', 'user_username',
+            'id', 'user', 'user_name', 'user_username', 'user_profile_image',
             'date', 'date_formatted',
             'expected_arrival_time', 'arrival_time_formatted',
             'reason', 'status', 'status_display',
@@ -281,6 +282,18 @@ class LateArrivalRequestSerializer(serializers.ModelSerializer):
     def get_user_name(self, obj):
         full_name = (obj.user.full_name or "").strip()
         return full_name if full_name else obj.user.username
+
+    def get_user_profile_image(self, obj):
+        try:
+            from employee_management.models import Employee
+            employee = Employee.objects.filter(email=obj.user.email).first()
+            if employee and employee.profile_image:
+                return employee.profile_image.url
+        except Exception:
+            pass
+        if obj.user.profile_image:
+            return obj.user.profile_image.url
+        return None
 
     def get_date_formatted(self, obj):
         return obj.date.strftime('%d %b %Y') if obj.date else None
@@ -351,6 +364,7 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
     """Full serializer for LeaveRequest - used for list/detail views"""
     user_name = serializers.SerializerMethodField()
     user_username = serializers.CharField(source='user.username', read_only=True)
+    user_profile_image = serializers.SerializerMethodField()
     reviewed_by_name = serializers.CharField(source='reviewed_by.full_name', read_only=True, allow_null=True)
     total_days = serializers.ReadOnlyField()
     leave_type_display = serializers.CharField(source='get_leave_type_display', read_only=True)
@@ -362,7 +376,7 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = LeaveRequest
         fields = [
-            'id', 'user', 'user_name', 'user_username',
+            'id', 'user', 'user_name', 'user_username', 'user_profile_image',
             'leave_type', 'leave_type_display',
             'duration_type', 'duration_type_display',
             'start_date', 'start_date_formatted',
@@ -382,6 +396,18 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
     def get_user_name(self, obj):
         full_name = (obj.user.full_name or "").strip()
         return full_name if full_name else obj.user.username
+
+    def get_user_profile_image(self, obj):
+        try:
+            from employee_management.models import Employee
+            employee = Employee.objects.filter(email=obj.user.email).first()
+            if employee and employee.profile_image:
+                return employee.profile_image.url
+        except Exception:
+            pass
+        if obj.user.profile_image:
+            return obj.user.profile_image.url
+        return None
 
     def get_start_date_formatted(self, obj):
         return obj.start_date.strftime('%d %b %Y') if obj.start_date else None
@@ -517,6 +543,7 @@ class EarlyDepartureRequestSerializer(serializers.ModelSerializer):
     """Full read serializer – used in list / detail views."""
     user_name = serializers.SerializerMethodField()
     user_username = serializers.CharField(source='user.username', read_only=True)
+    user_profile_image = serializers.SerializerMethodField()
     reviewed_by_name = serializers.CharField(
         source='reviewed_by.full_name', read_only=True, allow_null=True
     )
@@ -527,7 +554,7 @@ class EarlyDepartureRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = EarlyDepartureRequest
         fields = [
-            'id', 'user', 'user_name', 'user_username',
+            'id', 'user', 'user_name', 'user_username', 'user_profile_image',
             'date', 'date_formatted',
             'expected_departure_time', 'departure_time_formatted',
             'reason', 'status', 'status_display',
@@ -548,6 +575,18 @@ class EarlyDepartureRequestSerializer(serializers.ModelSerializer):
     def get_user_name(self, obj):
         full_name = (obj.user.full_name or "").strip()
         return full_name if full_name else obj.user.username
+
+    def get_user_profile_image(self, obj):
+        try:
+            from employee_management.models import Employee
+            employee = Employee.objects.filter(email=obj.user.email).first()
+            if employee and employee.profile_image:
+                return employee.profile_image.url
+        except Exception:
+            pass
+        if obj.user.profile_image:
+            return obj.user.profile_image.url
+        return None
 
     def get_date_formatted(self, obj):
         return obj.date.strftime('%d %b %Y') if obj.date else None
@@ -634,6 +673,7 @@ class SalaryAdvanceRequestSerializer(serializers.ModelSerializer):
     """Full read serializer – used in list / detail views."""
     user_name     = serializers.SerializerMethodField()
     user_username = serializers.CharField(source='user.username', read_only=True)
+    user_profile_image = serializers.SerializerMethodField()
     reviewed_by_name = serializers.CharField(
         source='reviewed_by.full_name', read_only=True, allow_null=True
     )
@@ -643,7 +683,7 @@ class SalaryAdvanceRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = SalaryAdvanceRequest
         fields = [
-            'id', 'user', 'user_name', 'user_username',
+            'id', 'user', 'user_name', 'user_username', 'user_profile_image',
             'amount', 'amount_display',
             'reason', 'repayment_months',
             'status', 'status_display',
@@ -664,6 +704,18 @@ class SalaryAdvanceRequestSerializer(serializers.ModelSerializer):
     def get_user_name(self, obj):
         full_name = (obj.user.full_name or "").strip()
         return full_name if full_name else obj.user.username
+
+    def get_user_profile_image(self, obj):
+        try:
+            from employee_management.models import Employee
+            employee = Employee.objects.filter(email=obj.user.email).first()
+            if employee and employee.profile_image:
+                return employee.profile_image.url
+        except Exception:
+            pass
+        if obj.user.profile_image:
+            return obj.user.profile_image.url
+        return None
 
     def get_amount_display(self, obj):
         """Return a formatted currency string, e.g. ₹10,000.00"""

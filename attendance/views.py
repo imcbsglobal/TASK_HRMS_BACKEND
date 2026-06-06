@@ -915,11 +915,21 @@ class LateArrivalRequestViewSet(viewsets.ModelViewSet):
 
         if _is_admin(user):
             status_filter = self.request.query_params.get('status')
-            user_filter = self.request.query_params.get('user_id')
+            user_filter   = self.request.query_params.get('user_id')
+            date_filter   = self.request.query_params.get('date')    # YYYY-MM-DD
+            year_filter   = self.request.query_params.get('year')
+            month_filter  = self.request.query_params.get('month')
+
             if status_filter:
                 qs = qs.filter(status=status_filter)
             if user_filter:
                 qs = qs.filter(user_id=user_filter)
+            if date_filter:
+                qs = qs.filter(date=date_filter)
+            elif year_filter and month_filter:
+                qs = qs.filter(date__year=int(year_filter), date__month=int(month_filter))
+            elif year_filter:
+                qs = qs.filter(date__year=int(year_filter))
             return qs
 
         return qs.filter(user=user)
@@ -1136,11 +1146,27 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
         if _is_admin(user):
             status_filter = self.request.query_params.get('status')
-            user_filter = self.request.query_params.get('user_id')
+            user_filter   = self.request.query_params.get('user_id')
+            date_filter   = self.request.query_params.get('date')    # YYYY-MM-DD — matches start_date
+            year_filter   = self.request.query_params.get('year')
+            month_filter  = self.request.query_params.get('month')
+
             if status_filter:
                 qs = qs.filter(status=status_filter)
             if user_filter:
                 qs = qs.filter(user_id=user_filter)
+            if date_filter:
+                # Return leaves that overlap the given date
+                qs = qs.filter(start_date__lte=date_filter, end_date__gte=date_filter)
+            elif year_filter and month_filter:
+                from datetime import date as _date
+                import calendar as _cal
+                y, m = int(year_filter), int(month_filter)
+                first = _date(y, m, 1)
+                last  = _date(y, m, _cal.monthrange(y, m)[1])
+                qs = qs.filter(start_date__lte=last, end_date__gte=first)
+            elif year_filter:
+                qs = qs.filter(start_date__year=int(year_filter))
             return qs
 
         return qs.filter(user=user)
@@ -1352,12 +1378,22 @@ class AttendanceSettingsViewSet(viewsets.ModelViewSet):
             return [permissions.IsAdminUser()]
         return [permissions.IsAuthenticated()]
 
-    @action(detail=False, methods=['get'], url_path='current')
+    @action(detail=False, methods=['get', 'post'], url_path='current')
     def current_settings(self, request):
         admin_owner = _get_admin_owner(request.user)
         settings_obj = AttendanceSettings.objects.filter(admin_owner=admin_owner).first()
         if not settings_obj:
             settings_obj = AttendanceSettings.objects.create(admin_owner=admin_owner)
+
+        if request.method == 'POST':
+            if not _is_admin(request.user):
+                return Response({'error': 'Only admins can update settings.'}, status=status.HTTP_403_FORBIDDEN)
+            serializer = self.get_serializer(settings_obj, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        # GET
         serializer = self.get_serializer(settings_obj)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -1418,11 +1454,21 @@ class EarlyDepartureRequestViewSet(viewsets.ModelViewSet):
 
         if _is_admin(user):
             status_filter = self.request.query_params.get('status')
-            user_filter = self.request.query_params.get('user_id')
+            user_filter   = self.request.query_params.get('user_id')
+            date_filter   = self.request.query_params.get('date')    # YYYY-MM-DD
+            year_filter   = self.request.query_params.get('year')
+            month_filter  = self.request.query_params.get('month')
+
             if status_filter:
                 qs = qs.filter(status=status_filter)
             if user_filter:
                 qs = qs.filter(user_id=user_filter)
+            if date_filter:
+                qs = qs.filter(date=date_filter)
+            elif year_filter and month_filter:
+                qs = qs.filter(date__year=int(year_filter), date__month=int(month_filter))
+            elif year_filter:
+                qs = qs.filter(date__year=int(year_filter))
             return qs
 
         return qs.filter(user=user)
