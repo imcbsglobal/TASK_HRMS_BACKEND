@@ -91,6 +91,37 @@ def _is_admin(user):
     )
 
 
+def _is_sunday_working(admin_owner):
+    """
+    Return True if the PayrollPolicy for this tenant has
+    salaryCalculation.sundayWorking = True, meaning Sunday is a regular
+    working day and should be included in all day-count calculations.
+    """
+    try:
+        from master.models import PayrollPolicy
+        policy_obj = PayrollPolicy.objects.filter(admin_owner=admin_owner).first()
+        if policy_obj and policy_obj.policy_data:
+            return bool(
+                policy_obj.policy_data
+                .get('salaryCalculation', {})
+                .get('sundayWorking', False)
+            )
+    except Exception:
+        pass
+    return False
+
+
+def _is_working_day(date_obj, sunday_working=False):
+    """
+    Return True if the given date should count as a working day.
+    Normally Mon–Sat (weekday 0–5); also includes Sunday when sunday_working=True.
+    """
+    wd = date_obj.weekday()
+    if sunday_working:
+        return True   # all 7 days are working days
+    return wd < 6     # Mon–Sat (exclude Sunday = weekday 6)
+
+
 def _get_admin_owner(user):
     """
     Return the admin_owner for tenant-scoped writes.
@@ -681,10 +712,12 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 
         total_days = attendances.count()
         if total_days == 0:
+            admin_owner = _get_admin_owner(user)
+            sunday_working = _is_sunday_working(admin_owner)
             current_date = first_day
             total_days = 0
             while current_date <= last_day:
-                if current_date.weekday() < 5:
+                if _is_working_day(current_date, sunday_working):
                     total_days += 1
                 current_date += timedelta(days=1)
 
@@ -779,7 +812,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 
         working_days = sum(
             1 for d in range((count_until - first_day).days + 1)
-            if (first_day + timedelta(days=d)).weekday() < 5
+            if _is_working_day(first_day + timedelta(days=d), _is_sunday_working(admin_owner))
         )
 
         if working_days == 0:
@@ -1232,6 +1265,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
         admin_notes = serializer.validated_data.get('admin_notes', '')
         admin_owner = _get_admin_owner(request.user)
+        sunday_working = _is_sunday_working(admin_owner)
 
         if action_type == 'approve':
             leave_request.status = 'approved'
@@ -1239,7 +1273,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
             current_date = leave_request.start_date
             while current_date <= leave_request.end_date:
-                if current_date.weekday() < 5:
+                if _is_working_day(current_date, sunday_working):
                     attendance, created = Attendance.objects.get_or_create(
                         user=leave_request.user,
                         date=current_date,
@@ -1266,7 +1300,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
             current_date = leave_request.start_date
             while current_date <= leave_request.end_date:
-                if current_date.weekday() < 5:
+                if _is_working_day(current_date, sunday_working):
                     attendance, created = Attendance.objects.get_or_create(
                         user=leave_request.user,
                         date=current_date,

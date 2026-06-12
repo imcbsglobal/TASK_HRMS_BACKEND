@@ -11,6 +11,7 @@ from .views import (
     CompanySettingsCurrentView,
     CorporateClientListView,
     SwitchClientView,
+    ChangePasswordView
 )
 from rest_framework_simplejwt.views import TokenRefreshView
 
@@ -36,4 +37,5 @@ urlpatterns = [
     # 🔄 Client Switcher
     path('corporate-clients/',          CorporateClientListView.as_view(),   name='corporate_clients'),
     path('switch-client/',              SwitchClientView.as_view(),          name='switch_client'),
+    path('change-password/',            ChangePasswordView.as_view(),        name='change_password'),
 ]

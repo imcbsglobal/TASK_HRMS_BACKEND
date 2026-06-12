@@ -532,24 +532,94 @@ def _policy_decision_qs(employee, year, month, admin_owner=None):
 def _build_payroll_dict(employee, year, month, admin_owner=None):
     """
     Central helper for payroll calculation.
+
+    Supports two calculation modes depending on the PayrollPolicy setting
+    `salaryCalculation.enabled`:
+
+    Standard mode (default):
+      total_days = calendar days in month − holidays
+      per_day    = basic_salary / total_days
+      attendance_deduction = (absent_days + half_days * 0.5) * per_day
+
+    Normalized mode (salaryCalculation.enabled = True):
+      Every month is treated as `normalizedMonthDays` (default 30) days for
+      salary purposes, regardless of whether the calendar month has 28/30/31.
+      Employees are credited for (normalizedMonthDays + paidOffDaysPerMonth)
+      days — e.g. 30 + 4 = 34 by default.
+      Absent days are first absorbed by the free off-day allowance; once that
+      is exhausted each additional absent day deducts one day's salary.
+
+      per_day            = basic_salary / normalizedMonthDays
+      credited_days      = normalizedMonthDays + paidOffDaysPerMonth  (e.g. 34)
+      billable_absences  = max(0, absent_days − paidOffDaysPerMonth)
+      attendance_deduction = billable_absences * per_day
     """
     calendar_days = calendar.monthrange(year, month)[1]
-    
-    from master.models import Holiday
+
+    from master.models import Holiday, PayrollPolicy as _PP
     holidays_qs = Holiday.objects.filter(date__year=year, date__month=month, is_active=True)
     if admin_owner:
         holidays_qs = holidays_qs.filter(admin_owner=admin_owner)
     holiday_count = holidays_qs.count()
-    
+
+    # Raw calendar working days (used in standard mode and policy violations)
     total_days = max(1, calendar_days - holiday_count)
-    
+
     basic_salary = employee.salary
+
+    # ── Resolve salary-calculation policy ────────────────────────────────────
+    policy_obj = _PP.objects.filter(admin_owner=admin_owner).first() if admin_owner else None
+    policy_data = policy_obj.policy_data if policy_obj else {}
+    sal_calc = policy_data.get('salaryCalculation', {})
+    normalized_mode = sal_calc.get('enabled', False)
+    normalized_month_days = int(sal_calc.get('normalizedMonthDays', 30))
+    paid_off_days = int(sal_calc.get('paidOffDaysPerMonth', 4))
+    sunday_working = bool(sal_calc.get('sundayWorking', False))
+
+    # When Sunday is a working day, raw total_days should include Sundays too
+    if sunday_working:
+        # Recalculate: all calendar days minus holidays (no weekday filter)
+        total_days = max(1, calendar_days - holiday_count)
+    # (standard mode already uses all calendar days minus holidays, so no change needed)
 
     # ── Attendance ────────────────────────────────────────────────────────────
     att = _get_attendance_summary(employee, year, month, total_days)
-    per_day, att_deduction = _calc_att_deduction(
-        basic_salary, total_days, att['absent_days'], att['half_days']
-    )
+
+    if normalized_mode:
+        # Normalize: treat every month as `normalized_month_days` days
+        norm_total_days = max(1, normalized_month_days)
+        per_day = (Decimal(str(basic_salary)) / Decimal(str(norm_total_days))).quantize(
+            Decimal('0.01'), rounding=ROUND_HALF_UP
+        )
+        
+        # Effective absence count (absent + 0.5 * half_days)
+        effective_absences = Decimal(str(att['absent_days'])) + Decimal(str(att['half_days'])) * Decimal('0.5')
+        
+        # Free off-days (e.g. 4) act as a paid bonus. Absences subtract from this bonus first.
+        extra_days_worked = max(Decimal('0'), Decimal(str(paid_off_days)) - effective_absences).quantize(
+            Decimal('0.5'), rounding=ROUND_HALF_UP
+        )
+        extra_days_bonus = (extra_days_worked * per_day).quantize(
+            Decimal('0.01'), rounding=ROUND_HALF_UP
+        )
+        
+        # If absences exceed the free paid off-days, the excess absences deduct from the basic salary.
+        billable_absences = max(Decimal('0'), effective_absences - Decimal(str(paid_off_days)))
+        att_deduction = (billable_absences * per_day).quantize(
+            Decimal('0.01'), rounding=ROUND_HALF_UP
+        )
+        
+        calc_total_days = norm_total_days
+        credited_days = norm_total_days + paid_off_days
+    else:
+        per_day, att_deduction = _calc_att_deduction(
+            basic_salary, total_days, att['absent_days'], att['half_days']
+        )
+        calc_total_days = total_days
+        credited_days = total_days
+        billable_absences = att['absent_days']
+        extra_days_worked = Decimal('0')
+        extra_days_bonus = Decimal('0.00')
 
     # ── Manual allowances & deductions from DB (tenant-scoped) ────────────────
     db_allowances = Allowance.objects.filter(
@@ -572,8 +642,6 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
         db_policy_deductions.aggregate(t=Sum('amount'))['t'] or Decimal('0.00')
     ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
-    policy_obj = PayrollPolicy.objects.filter(admin_owner=admin_owner).first() if admin_owner else None
-    policy_data = policy_obj.policy_data if policy_obj else {}
     policy_violations = _check_policy_violations(employee, year, month, policy_data, admin_owner, total_days=total_days)
 
     # ── WFH deduction (based on policy salary effect) ─────────────────────────
@@ -593,9 +661,23 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
 
     # ── Auto-compute PF & Overtime ────────────────────────────────────────────
     pf_amount,  pf_detail  = _calc_pf_amount(employee)
-    ot_amount,  ot_detail  = _calc_overtime_amount(employee, total_days)
+    ot_amount,  ot_detail  = _calc_overtime_amount(employee, calc_total_days)
 
-    auto_allowances_total = pf_amount + ot_amount
+    auto_allowances_total = pf_amount + ot_amount + extra_days_bonus
+
+    # Build extra-days detail item for the allowances list
+    extra_days_detail = None
+    if extra_days_bonus > Decimal('0'):
+        extra_days_detail = {
+            'source':      'auto_extra_days',
+            'name':        'Extra Days Bonus',
+            'amount':      str(extra_days_bonus),
+            'description': (
+                f"Auto-computed: {float(extra_days_worked)} paid off-day(s) credited "
+                f"for attendance in {calc_total_days}-day normalized month "
+                f"@ {str(per_day)}/day"
+            ),
+        }
 
     # ── Totals ────────────────────────────────────────────────────────────────
     total_allowances = Decimal(str(db_allowances_total)) + auto_allowances_total
@@ -614,12 +696,23 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
         'manual_deductions_total': str(total_manual_deductions),
         'policy_deductions_total': str(policy_deductions_total),
         'net_salary':              str(net_salary),
-        'total_days_in_month':     total_days,
+        'total_days_in_month':     calc_total_days,
+        'calendar_days_in_month':  calendar_days,
         'total_working_days':      att['working_days'],
         'db_allowances_total':     str(db_allowances_total),
         'pf_amount':               str(pf_amount),
         'overtime_amount':         str(ot_amount),
         'auto_allowances_total':   str(auto_allowances_total),
+        'salary_calculation': {
+            'mode':                 'normalized' if normalized_mode else 'standard',
+            'normalized_month_days': calc_total_days,
+            'paid_off_days':         paid_off_days if normalized_mode else 0,
+            'credited_days':         credited_days,
+            'billable_absences':     float(billable_absences),
+            'sunday_working':        sunday_working,
+            'extra_days_worked':     float(extra_days_worked),
+            'extra_days_bonus':      str(extra_days_bonus),
+        },
         'attendance': {
             'present_days':         att['present_days'],
             'absent_days':          att['absent_days'],
@@ -640,7 +733,8 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
                 'id': a.id, 'name': a.allowance_name, 'amount': str(a.amount), 
                 'description': a.description, 'source': 'manual'
             } for a in db_allowances
-        ] + ([pf_detail] if pf_detail else []) + ([ot_detail] if ot_detail else []),
+        ] + ([pf_detail] if pf_detail else []) + ([ot_detail] if ot_detail else [])
+          + ([extra_days_detail] if extra_days_detail else []),
         'deductions': [
             {
                 'id': d.id,
