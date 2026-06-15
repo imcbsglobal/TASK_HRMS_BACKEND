@@ -221,6 +221,16 @@ class LeaveRequest(models.Model):
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='leave_requests')
     leave_type = models.CharField(max_length=20, choices=LEAVE_TYPE_CHOICES, default='casual')
+
+    # ── Dynamic leave type (links to master.LeaveType) ────────────────────────
+    leave_type_obj = models.ForeignKey(
+        'master.LeaveType',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='leave_requests',
+        help_text="Reference to the admin-managed LeaveType record.",
+    )
+    # ─────────────────────────────────────────────────────────────────────────
     duration_type = models.CharField(
         max_length=10,
         choices=DURATION_TYPE_CHOICES,

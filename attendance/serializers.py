@@ -367,17 +367,21 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
     user_profile_image = serializers.SerializerMethodField()
     reviewed_by_name = serializers.CharField(source='reviewed_by.full_name', read_only=True, allow_null=True)
     total_days = serializers.ReadOnlyField()
-    leave_type_display = serializers.CharField(source='get_leave_type_display', read_only=True)
+    leave_type_display = serializers.SerializerMethodField()
     duration_type_display = serializers.CharField(source='get_duration_type_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     start_date_formatted = serializers.SerializerMethodField()
     end_date_formatted = serializers.SerializerMethodField()
+    # Dynamic leave type info
+    leave_type_obj_name = serializers.CharField(source='leave_type_obj.name', read_only=True, allow_null=True)
+    leave_type_payment_status = serializers.CharField(source='leave_type_obj.payment_status', read_only=True, allow_null=True)
 
     class Meta:
         model = LeaveRequest
         fields = [
             'id', 'user', 'user_name', 'user_username', 'user_profile_image',
             'leave_type', 'leave_type_display',
+            'leave_type_obj', 'leave_type_obj_name', 'leave_type_payment_status',
             'duration_type', 'duration_type_display',
             'start_date', 'start_date_formatted',
             'end_date', 'end_date_formatted',
@@ -392,6 +396,12 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'admin_owner': {'write_only': True, 'required': False},
         }
+
+    def get_leave_type_display(self, obj):
+        # Prefer the dynamic leave type name, fall back to the enum display
+        if obj.leave_type_obj:
+            return obj.leave_type_obj.name
+        return obj.get_leave_type_display()
 
     def get_user_name(self, obj):
         full_name = (obj.user.full_name or "").strip()
@@ -420,12 +430,20 @@ class CreateLeaveRequestSerializer(serializers.ModelSerializer):
     """Serializer for creating a new leave request"""
     class Meta:
         model = LeaveRequest
-        fields = ['leave_type', 'duration_type', 'start_date', 'end_date', 'reason']
+        fields = ['leave_type', 'leave_type_obj', 'duration_type', 'start_date', 'end_date', 'reason']
+        extra_kwargs = {
+            'leave_type': {'required': False},
+            'leave_type_obj': {'required': False},
+        }
 
     def validate(self, data):
         start_date = data.get('start_date')
         end_date = data.get('end_date')
         duration_type = data.get('duration_type', 'full_day')
+
+        # Require at least one of leave_type or leave_type_obj
+        if not data.get('leave_type') and not data.get('leave_type_obj'):
+            raise serializers.ValidationError("Please select a leave type.")
 
         if start_date and end_date:
             if end_date < start_date:

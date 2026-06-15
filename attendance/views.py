@@ -1216,7 +1216,11 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             employee_user = request.user,
             context       = {
                 'name':       _get_full_name(request.user),
-                'leave_type': leave_request.get_leave_type_display(),
+                'leave_type': (
+                    leave_request.leave_type_obj.name
+                    if leave_request.leave_type_obj
+                    else leave_request.get_leave_type_display()
+                ),
                 'start_date': str(leave_request.start_date),
                 'end_date':   str(leave_request.end_date),
                 'reason':     leave_request.reason or '',
@@ -1267,60 +1271,176 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         admin_owner = _get_admin_owner(request.user)
         sunday_working = _is_sunday_working(admin_owner)
 
+        # ── Determine if this leave type is unpaid (triggers salary deduction) ─
+        is_unpaid = False
+        if leave_request.leave_type_obj:
+            is_unpaid = leave_request.leave_type_obj.payment_status == 'unpaid'
+        else:
+            # Fall back to the legacy enum — 'unpaid' enum value means unpaid
+            is_unpaid = leave_request.leave_type == 'unpaid'
+
+        leave_label = (
+            leave_request.leave_type_obj.name
+            if leave_request.leave_type_obj
+            else leave_request.get_leave_type_display()
+        )
+
+        def _apply_attendance_records(status_value, note_prefix):
+            """Create/update attendance records for each working day in the leave range."""
+            current_date = leave_request.start_date
+            working_days = 0
+            while current_date <= leave_request.end_date:
+                if _is_working_day(current_date, sunday_working):
+                    working_days += 1
+                    attendance, created = Attendance.objects.get_or_create(
+                        user=leave_request.user,
+                        date=current_date,
+                        admin_owner=admin_owner,
+                        defaults={
+                            'status': status_value,
+                            'notes': f'{note_prefix}: {leave_label}',
+                            'is_verified': True,
+                            'verified_by': request.user,
+                            'verified_at': timezone.now(),
+                        }
+                    )
+                    if not created and not attendance.check_in_time:
+                        attendance.status = status_value
+                        attendance.notes = f'{note_prefix}: {leave_label}'
+                        attendance.is_verified = True
+                        attendance.verified_by = request.user
+                        attendance.verified_at = timezone.now()
+                        attendance.save(update_fields=[
+                            'status', 'notes', 'is_verified',
+                            'verified_by', 'verified_at', 'updated_at',
+                        ])
+                current_date += timedelta(days=1)
+            return working_days
+
+        def _apply_unpaid_deduction(working_days):
+            """
+            Create a Deduction record for unpaid leave days so it is
+            picked up by payroll calculation.
+
+            Per-day salary is computed using the SAME formula as payroll:
+              - Standard mode : per_day = salary / (calendar_days − sunday_holidays)
+              - Normalized mode: per_day = salary / normalizedMonthDays (default 30)
+
+            One Deduction row is created per calendar month the leave spans
+            (upsert so repeated approvals don't double-count).
+            """
+            from master.models import Deduction as MasterDeduction, PayrollPolicy as _PP
+            from employee_management.models import Employee
+            from decimal import Decimal, ROUND_HALF_UP
+            import calendar as _cal
+            from collections import defaultdict
+
+            # ── Locate employee ───────────────────────────────────────────────
+            employee = Employee.objects.filter(
+                email=leave_request.user.email,
+                admin_owner=admin_owner,
+            ).first()
+            if not employee or not employee.salary:
+                return
+
+            basic_salary = Decimal(str(employee.salary))
+
+            # ── Payroll policy (normalized mode?) ─────────────────────────────
+            policy_obj  = _PP.objects.filter(admin_owner=admin_owner).first()
+            policy_data = policy_obj.policy_data if policy_obj else {}
+            sal_calc    = policy_data.get('salaryCalculation', {})
+            normalized_mode       = sal_calc.get('enabled', False)
+            normalized_month_days = int(sal_calc.get('normalizedMonthDays', 30))
+
+            # ── Count leave days per (year, month) ────────────────────────────
+            days_per_month = defaultdict(int)
+            cur = leave_request.start_date
+            while cur <= leave_request.end_date:
+                if _is_working_day(cur, sunday_working):
+                    days_per_month[(cur.year, cur.month)] += 1
+                cur += timedelta(days=1)
+
+            # ── Build one Deduction row per affected month ────────────────────
+            for (yr, mo), days in days_per_month.items():
+
+                if normalized_mode:
+                    # Every month treated as normalizedMonthDays (e.g. 30)
+                    total_days_divisor = max(1, normalized_month_days)
+                else:
+                    # Standard: calendar days minus Sunday-holidays for that month
+                    from payroll.views import _get_holiday_breakdown
+                    cal_days = _cal.monthrange(yr, mo)[1]
+                    hol_bk   = _get_holiday_breakdown(yr, mo, admin_owner)
+                    total_days_divisor = max(1, cal_days - hol_bk['sunday_count'])
+
+                per_day    = (basic_salary / Decimal(str(total_days_divisor))).quantize(
+                    Decimal('0.01'), rounding=ROUND_HALF_UP
+                )
+
+                # Half-day leave → deduct only half a day's salary
+                is_half_day = leave_request.duration_type == 'half_day'
+                day_deduct = (per_day * Decimal(str(days))).quantize(
+                    Decimal('0.01'), rounding=ROUND_HALF_UP
+                )
+                if is_half_day:
+                    day_deduct = (day_deduct / Decimal('2')).quantize(
+                        Decimal('0.01'), rounding=ROUND_HALF_UP
+                    )
+
+                deduction_name = f'Unpaid Leave – {leave_label}'
+                employee_name  = _get_full_name(leave_request.user) or leave_request.user.username
+                duration_label = 'half-day' if is_half_day else 'full-day'
+                description    = (
+                    f'Auto-generated: {days} unpaid {duration_label} leave day(s) '
+                    f'({"0.5" if is_half_day else "1"}/{total_days_divisor} working days × ₹{per_day}/day) '
+                    f'approved for {employee_name}'
+                )
+
+                existing = MasterDeduction.objects.filter(
+                    employee=employee,
+                    deduction_name=deduction_name,
+                    year=yr,
+                    month=mo,
+                    admin_owner=admin_owner,
+                ).first()
+                if existing:
+                    existing.amount      = day_deduct
+                    existing.description = description
+                    existing.save(update_fields=['amount', 'description', 'updated_at'])
+                else:
+                    MasterDeduction.objects.create(
+                        employee=employee,
+                        deduction_name=deduction_name,
+                        year=yr,
+                        month=mo,
+                        amount=day_deduct,
+                        description=description,
+                        is_active=True,
+                        admin_owner=admin_owner,
+                    )
+
         if action_type == 'approve':
             leave_request.status = 'approved'
             message = 'Leave request approved successfully.'
 
-            current_date = leave_request.start_date
-            while current_date <= leave_request.end_date:
-                if _is_working_day(current_date, sunday_working):
-                    attendance, created = Attendance.objects.get_or_create(
-                        user=leave_request.user,
-                        date=current_date,
-                        admin_owner=admin_owner,
-                        defaults={
-                            'status': 'leave',
-                            'notes': f'Approved leave: {leave_request.get_leave_type_display()}',
-                            'is_verified': True,
-                            'verified_by': request.user,
-                            'verified_at': timezone.now(),
-                        }
-                    )
-                    if not created and not attendance.check_in_time:
-                        attendance.status = 'leave'
-                        attendance.notes = f'Approved leave: {leave_request.get_leave_type_display()}'
-                        attendance.is_verified = True
-                        attendance.verified_by = request.user
-                        attendance.verified_at = timezone.now()
-                        attendance.save(update_fields=['status', 'notes', 'is_verified', 'verified_by', 'verified_at', 'updated_at'])
-                current_date += timedelta(days=1)
+            if is_unpaid:
+                # Unpaid leave → create salary deduction
+                # Half-day unpaid → attendance = half_day; full-day unpaid → attendance = absent
+                if leave_request.duration_type == 'half_day':
+                    working_days = _apply_attendance_records('half_day', 'Unpaid half-day leave')
+                else:
+                    working_days = _apply_attendance_records('absent', 'Unpaid leave (absent)')
+                _apply_unpaid_deduction(working_days)
+                message = 'Unpaid leave approved. Salary deduction has been created.'
+            else:
+                # Paid leave → mark as leave (no salary hit)
+                _apply_attendance_records('leave', 'Approved leave')
+
         elif action_type == 'waive':
             leave_request.status = 'waived'
             message = 'Leave request waived successfully.'
+            _apply_attendance_records('leave', 'Waived leave')
 
-            current_date = leave_request.start_date
-            while current_date <= leave_request.end_date:
-                if _is_working_day(current_date, sunday_working):
-                    attendance, created = Attendance.objects.get_or_create(
-                        user=leave_request.user,
-                        date=current_date,
-                        admin_owner=admin_owner,
-                        defaults={
-                            'status': 'leave',
-                            'notes': f'Waived leave: {leave_request.get_leave_type_display()}',
-                            'is_verified': True,
-                            'verified_by': request.user,
-                            'verified_at': timezone.now(),
-                        }
-                    )
-                    if not created and not attendance.check_in_time:
-                        attendance.status = 'leave'
-                        attendance.notes = f'Waived leave: {leave_request.get_leave_type_display()}'
-                        attendance.is_verified = True
-                        attendance.verified_by = request.user
-                        attendance.verified_at = timezone.now()
-                        attendance.save(update_fields=['status', 'notes', 'is_verified', 'verified_by', 'verified_at', 'updated_at'])
-                current_date += timedelta(days=1)
         else:
             leave_request.status = 'rejected'
             message = 'Leave request rejected.'
@@ -1338,7 +1458,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
                 employee_user = leave_request.user,
                 context       = {
                     'name':       _get_full_name(leave_request.user),
-                    'leave_type': leave_request.get_leave_type_display(),
+                    'leave_type': leave_label,
                     'start_date': str(leave_request.start_date),
                     'end_date':   str(leave_request.end_date),
                 },
@@ -1350,7 +1470,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
                 employee_user = leave_request.user,
                 context       = {
                     'name':        _get_full_name(leave_request.user),
-                    'leave_type':  leave_request.get_leave_type_display(),
+                    'leave_type':  leave_label,
                     'start_date':  str(leave_request.start_date),
                     'end_date':    str(leave_request.end_date),
                     'admin_notes': admin_notes or 'No notes provided.',
