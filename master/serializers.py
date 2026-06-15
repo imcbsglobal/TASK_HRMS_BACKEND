@@ -29,7 +29,7 @@ class HolidaySerializer(serializers.ModelSerializer):
         model = Holiday
         fields = [
             'id', 'name', 'date', 'type', 'type_display',
-            'description', 'is_active', 'days_until',
+            'description', 'is_active', 'is_paid', 'days_until',
             'created_at', 'updated_at', 'admin_owner',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'type_display', 'days_until']

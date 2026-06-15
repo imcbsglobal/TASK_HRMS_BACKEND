@@ -130,21 +130,15 @@ def _check_policy_violations(employee, year, month, policy_data, admin, total_da
     # ── Per-day salary — must match _build_payroll_dict ───────────────────────
     basic_salary = Decimal(str(employee.salary))
     if total_days is None:
-        # Recalculate working days (calendar days minus holidays)
+        # Recalculate working days — only Sunday holidays reduce the divisor
         calendar_days_count = calendar.monthrange(year, month)[1]
-        from master.models import Holiday as _Holiday
-        hol_qs = _Holiday.objects.filter(date__year=year, date__month=month, is_active=True)
-        if admin:
-            hol_qs = hol_qs.filter(admin_owner=admin)
-        holiday_count = hol_qs.count()
-        total_days = max(1, calendar_days_count - holiday_count)
+        hol_bk = _get_holiday_breakdown(year, month, admin)
+        total_days = max(1, calendar_days_count - hol_bk['sunday_count'])
 
     per_day = (basic_salary / Decimal(str(total_days))).quantize(
         Decimal('0.01'), rounding=ROUND_HALF_UP
     )
-    per_half_day = (per_day / Decimal('2')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-
-    # Half-hour cut: 30-min proportion of the actual duty-hour window
+    per_half_day = (per_day / Decimal('2')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)    # Half-hour cut: 30-min proportion of the actual duty-hour window
     # e.g. 9-hr shift → per_day / 9hrs / 2 = per_day / 18
     # Fallback to 8 h if no duty times configured.
     if duty_start and duty_end:
@@ -529,17 +523,93 @@ def _policy_decision_qs(employee, year, month, admin_owner=None):
     return qs
 
 
+def _get_holiday_breakdown(year, month, admin_owner=None):
+    """
+    Split the month's active holidays into three buckets:
+
+    1. sunday_holidays   — holidays that fall on a Sunday.
+                           These reduce the working-day divisor (the day was
+                           already off; marking it as a holiday simply means
+                           employees are not expected to work that Sunday).
+
+    2. paid_non_sunday   — paid holidays on weekdays / Saturday.
+                           Working-day count is NOT reduced; instead the
+                           day's salary is paid as an allowance bonus so
+                           the employee effectively receives extra pay.
+
+    3. unpaid_non_sunday — unpaid holidays on weekdays / Saturday.
+                           Working-day count is NOT reduced; the day's
+                           salary is deducted (treated like an absent day).
+
+    Returns a dict:
+      {
+        'sunday_count':        int,
+        'paid_non_sunday_count':   int,
+        'unpaid_non_sunday_count': int,
+        'sunday_holidays':         [Holiday, ...],
+        'paid_non_sunday':         [Holiday, ...],
+        'unpaid_non_sunday':       [Holiday, ...],
+      }
+    """
+    from master.models import Holiday as _Holiday
+    import datetime as _dt
+
+    qs = _Holiday.objects.filter(date__year=year, date__month=month, is_active=True)
+    if admin_owner:
+        qs = qs.filter(admin_owner=admin_owner)
+
+    sunday_hols        = []
+    paid_non_sunday    = []
+    unpaid_non_sunday  = []
+
+    for h in qs:
+        if h.date.weekday() == 6:          # weekday() == 6 → Sunday
+            sunday_hols.append(h)
+        elif h.is_paid:
+            paid_non_sunday.append(h)
+        else:
+            unpaid_non_sunday.append(h)
+
+    return {
+        'sunday_count':            len(sunday_hols),
+        'paid_non_sunday_count':   len(paid_non_sunday),
+        'unpaid_non_sunday_count': len(unpaid_non_sunday),
+        'sunday_holidays':         sunday_hols,
+        'paid_non_sunday':         paid_non_sunday,
+        'unpaid_non_sunday':       unpaid_non_sunday,
+    }
+
+
 def _build_payroll_dict(employee, year, month, admin_owner=None):
     """
     Central helper for payroll calculation.
 
-    Supports two calculation modes depending on the PayrollPolicy setting
-    `salaryCalculation.enabled`:
+    Holiday treatment
+    ─────────────────
+    Holidays are split into three groups each month:
+
+    A) Sunday holidays
+       → These reduce the working-day divisor because the day was already
+         a day off; recognising it as a holiday just makes it official.
+         Effect: total_days -= sunday_holiday_count  (higher per_day rate)
+
+    B) Paid non-Sunday holidays (weekday / Saturday)
+       → The working-day count is NOT reduced.  Employees receive that
+         day's salary as an *allowance* (holiday pay bonus) in addition to
+         their normal base salary.
+         Effect: one allowance item per paid holiday, amount = per_day
+
+    C) Unpaid non-Sunday holidays (weekday / Saturday)
+       → The working-day count is NOT reduced.  The day's salary is
+         *deducted* from the employee's net pay (same as an absent day).
+         Effect: unpaid_holiday_deduction += per_day per unpaid holiday
 
     Standard mode (default):
-      total_days = calendar days in month − holidays
+      total_days = calendar days in month − sunday_holiday_count
       per_day    = basic_salary / total_days
       attendance_deduction = (absent_days + half_days * 0.5) * per_day
+      + paid_holiday_allowance    (B above)
+      + unpaid_holiday_deduction  (C above)
 
     Normalized mode (salaryCalculation.enabled = True):
       Every month is treated as `normalizedMonthDays` (default 30) days for
@@ -553,14 +623,24 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
       credited_days      = normalizedMonthDays + paidOffDaysPerMonth  (e.g. 34)
       billable_absences  = max(0, absent_days − paidOffDaysPerMonth)
       attendance_deduction = billable_absences * per_day
+      + paid_holiday_allowance    (B above — applied in all modes)
+      + unpaid_holiday_deduction  (C above — applied in all modes)
     """
+    import datetime as _dt
     calendar_days = calendar.monthrange(year, month)[1]
 
     from master.models import Holiday, PayrollPolicy as _PP
-    holidays_qs = Holiday.objects.filter(date__year=year, date__month=month, is_active=True)
-    if admin_owner:
-        holidays_qs = holidays_qs.filter(admin_owner=admin_owner)
-    holiday_count = holidays_qs.count()
+
+    # ── Holiday breakdown (Sunday vs paid/unpaid weekday) ─────────────────────
+    hol_breakdown = _get_holiday_breakdown(year, month, admin_owner)
+    sunday_count            = hol_breakdown['sunday_count']
+    paid_non_sunday_count   = hol_breakdown['paid_non_sunday_count']
+    unpaid_non_sunday_count = hol_breakdown['unpaid_non_sunday_count']
+    paid_non_sunday_hols    = hol_breakdown['paid_non_sunday']
+    unpaid_non_sunday_hols  = hol_breakdown['unpaid_non_sunday']
+
+    # Only Sunday holidays shrink the working-day divisor
+    holiday_count = sunday_count
 
     # Raw calendar working days (used in standard mode and policy violations)
     total_days = max(1, calendar_days - holiday_count)
@@ -621,6 +701,45 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
         extra_days_worked = Decimal('0')
         extra_days_bonus = Decimal('0.00')
 
+    # ── Paid non-Sunday holiday allowance ────────────────────────────────────
+    # Each paid weekday/Saturday holiday → employee receives 1 day's pay as an
+    # allowance (they keep their full base salary AND get the holiday day paid).
+    paid_holiday_allowance_items = []
+    paid_holiday_allowance_total = Decimal('0.00')
+    for h in paid_non_sunday_hols:
+        bonus = per_day.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        paid_holiday_allowance_total += bonus
+        paid_holiday_allowance_items.append({
+            'source':      'holiday_paid',
+            'name':        f"Holiday Pay – {h.name}",
+            'amount':      str(bonus),
+            'description': (
+                f"Paid holiday on {h.date} ({h.get_type_display()}). "
+                f"Salary credited as allowance."
+            ),
+            'holiday_id':  h.id,
+            'holiday_date': str(h.date),
+        })
+
+    # ── Unpaid non-Sunday holiday deduction ──────────────────────────────────
+    # Each unpaid weekday/Saturday holiday → one day's salary is deducted.
+    unpaid_holiday_deduction_items = []
+    unpaid_holiday_deduction_total = Decimal('0.00')
+    for h in unpaid_non_sunday_hols:
+        cut = per_day.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        unpaid_holiday_deduction_total += cut
+        unpaid_holiday_deduction_items.append({
+            'source':      'holiday_unpaid',
+            'name':        f"Unpaid Holiday – {h.name}",
+            'amount':      str(cut),
+            'description': (
+                f"Unpaid holiday on {h.date} ({h.get_type_display()}). "
+                f"Salary deducted for this day."
+            ),
+            'holiday_id':  h.id,
+            'holiday_date': str(h.date),
+        })
+
     # ── Manual allowances & deductions from DB (tenant-scoped) ────────────────
     db_allowances = Allowance.objects.filter(
         employee=employee, year=year, month=month, is_active=True
@@ -680,8 +799,18 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
         }
 
     # ── Totals ────────────────────────────────────────────────────────────────
-    total_allowances = Decimal(str(db_allowances_total)) + auto_allowances_total
-    total_deductions = att_deduction + Decimal(str(total_manual_deductions)) + policy_deductions_total + wfh_deduction
+    total_allowances = (
+        Decimal(str(db_allowances_total))
+        + auto_allowances_total
+        + paid_holiday_allowance_total
+    )
+    total_deductions = (
+        att_deduction
+        + Decimal(str(total_manual_deductions))
+        + policy_deductions_total
+        + wfh_deduction
+        + unpaid_holiday_deduction_total
+    )
 
     net_salary = (
         Decimal(str(basic_salary)) + total_allowances - total_deductions
@@ -703,6 +832,8 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
         'pf_amount':               str(pf_amount),
         'overtime_amount':         str(ot_amount),
         'auto_allowances_total':   str(auto_allowances_total),
+        'holiday_paid_allowance_total':    str(paid_holiday_allowance_total),
+        'holiday_unpaid_deduction_total':  str(unpaid_holiday_deduction_total),
         'salary_calculation': {
             'mode':                 'normalized' if normalized_mode else 'standard',
             'normalized_month_days': calc_total_days,
@@ -712,6 +843,14 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
             'sunday_working':        sunday_working,
             'extra_days_worked':     float(extra_days_worked),
             'extra_days_bonus':      str(extra_days_bonus),
+        },
+        'holidays': {
+            'sunday_holidays':         [{'id': h.id, 'name': h.name, 'date': str(h.date), 'type': h.type} for h in hol_breakdown['sunday_holidays']],
+            'paid_non_sunday':         [{'id': h.id, 'name': h.name, 'date': str(h.date), 'type': h.type, 'allowance': str(per_day)} for h in paid_non_sunday_hols],
+            'unpaid_non_sunday':       [{'id': h.id, 'name': h.name, 'date': str(h.date), 'type': h.type, 'deduction': str(per_day)} for h in unpaid_non_sunday_hols],
+            'sunday_count':            sunday_count,
+            'paid_non_sunday_count':   paid_non_sunday_count,
+            'unpaid_non_sunday_count': unpaid_non_sunday_count,
         },
         'attendance': {
             'present_days':         att['present_days'],
@@ -734,7 +873,8 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
                 'description': a.description, 'source': 'manual'
             } for a in db_allowances
         ] + ([pf_detail] if pf_detail else []) + ([ot_detail] if ot_detail else [])
-          + ([extra_days_detail] if extra_days_detail else []),
+          + ([extra_days_detail] if extra_days_detail else [])
+          + paid_holiday_allowance_items,
         'deductions': [
             {
                 'id': d.id,
@@ -744,7 +884,7 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
                 'source': 'policy' if d.deduction_name.startswith('Policy Deduction') else 'manual',
             }
             for d in list(db_other_deductions) + list(db_policy_deductions)
-        ],
+        ] + unpaid_holiday_deduction_items,
         'policy_violations': policy_violations,
         'employee_settings': {
             'pf_enabled':                   employee.pf_enabled,
@@ -869,6 +1009,8 @@ class PayrollViewSet(viewsets.ModelViewSet):
             'wfh_deduction': data.get('wfh_deduction', '0.00'),
             'manual_deductions_total': data['manual_deductions_total'], 'net_salary': data['net_salary'],
             'policy_deductions_total': data['policy_deductions_total'],
+            'holiday_paid_allowance_total':   data.get('holiday_paid_allowance_total', '0.00'),
+            'holiday_unpaid_deduction_total': data.get('holiday_unpaid_deduction_total', '0.00'),
             'total_days_in_month': data['total_days_in_month'], 'total_working_days': data['total_working_days'],
             'pf_amount': data['pf_amount'], 'overtime_amount': data['overtime_amount'],
             'db_allowances_total': data['db_allowances_total'], 'auto_allowances_total': data['auto_allowances_total'],
@@ -941,13 +1083,10 @@ class PayrollViewSet(viewsets.ModelViewSet):
 
         policy_data = policy_obj.policy_data if policy_obj else {}
 
-        # Pre-compute working days (calendar days minus holidays) — shared across employees
-        from master.models import Holiday as _HolidayPV
+        # Pre-compute working days (calendar days minus Sunday holidays only) — shared across employees
         _cal_days = calendar.monthrange(year, month)[1]
-        _hol_qs = _HolidayPV.objects.filter(date__year=year, date__month=month, is_active=True)
-        if admin:
-            _hol_qs = _hol_qs.filter(admin_owner=admin)
-        _total_days = max(1, _cal_days - _hol_qs.count())
+        _hol_bk = _get_holiday_breakdown(year, month, admin)
+        _total_days = max(1, _cal_days - _hol_bk['sunday_count'])
 
         # Fetch all employees for this tenant
         emp_qs = Employee.objects.all()
@@ -1037,12 +1176,9 @@ class PayrollViewSet(viewsets.ModelViewSet):
         ed_policy  = policy_data.get('attendance', {}).get('earlyDeparture', {})
 
         # Pre-compute working days for this month (same as _build_payroll_dict)
-        from master.models import Holiday as _HolidayDV
         _cal_days_dv = calendar.monthrange(year, month)[1]
-        _hol_qs_dv = _HolidayDV.objects.filter(date__year=year, date__month=month, is_active=True)
-        if admin:
-            _hol_qs_dv = _hol_qs_dv.filter(admin_owner=admin)
-        _total_days_dv = max(1, _cal_days_dv - _hol_qs_dv.count())
+        _hol_bk_dv = _get_holiday_breakdown(year, month, admin)
+        _total_days_dv = max(1, _cal_days_dv - _hol_bk_dv['sunday_count'])
 
         # Fetch approved (and waived) late and early requests for this day.
         # Only approved/waived requests are payroll-relevant — pending/rejected/cancelled

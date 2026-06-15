@@ -189,6 +189,10 @@ class Holiday(models.Model):
         default=True,
         help_text="Whether this holiday is currently visible"
     )
+    is_paid = models.BooleanField(
+        default=True,
+        help_text="Paid holiday = no salary deduction; Unpaid = salary deducted for that day"
+    )
 
     # ── Tenant isolation ──────────────────────────────────────────────────────
     admin_owner = models.ForeignKey(
