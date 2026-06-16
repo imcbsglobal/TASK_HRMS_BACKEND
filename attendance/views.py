@@ -350,9 +350,17 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         longitude = serializer.validated_data.get('longitude')
         address = serializer.validated_data.get('address', '')
 
-        # ── Geofence enforcement ──────────────────────────────────────────────
+        # ── Punch-method toggle gate ──────────────────────────────────────────
         admin_owner = _get_admin_owner(user)
         settings_obj = AttendanceSettings.objects.filter(admin_owner=admin_owner).order_by('-id').first()
+        if settings_obj and not settings_obj.normal_checkin_enabled:
+            return Response(
+                {'error': 'Normal check-in is currently disabled. Please use the face-recognition kiosk to punch in.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        # ─────────────────────────────────────────────────────────────────────
+
+        # ── Geofence enforcement ──────────────────────────────────────────────
         allowed, geo_error, _ = validate_geofence(user, latitude, longitude, settings_obj)
         if not allowed:
             return Response({'error': geo_error}, status=status.HTTP_403_FORBIDDEN)
@@ -415,9 +423,17 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         longitude = serializer.validated_data.get('longitude')
         address = serializer.validated_data.get('address', '')
 
-        # ── Geofence enforcement ──────────────────────────────────────────────
+        # ── Punch-method toggle gate ──────────────────────────────────────────
         admin_owner = _get_admin_owner(user)
         settings_obj = AttendanceSettings.objects.filter(admin_owner=admin_owner).order_by('-id').first()
+        if settings_obj and not settings_obj.normal_checkin_enabled:
+            return Response(
+                {'error': 'Normal check-out is currently disabled. Please use the face-recognition kiosk to punch out.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        # ─────────────────────────────────────────────────────────────────────
+
+        # ── Geofence enforcement ──────────────────────────────────────────────
         allowed, geo_error, _ = validate_geofence(user, latitude, longitude, settings_obj)
         if not allowed:
             return Response({'error': geo_error}, status=status.HTTP_403_FORBIDDEN)
@@ -2119,6 +2135,15 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
         device_user  = request.user
         admin_owner  = _get_admin_owner(device_user)
 
+        # ── Face punch toggle gate ────────────────────────────────────────────
+        _kiosk_settings = AttendanceSettings.objects.filter(admin_owner=admin_owner).order_by('-id').first()
+        if _kiosk_settings and not _kiosk_settings.face_punch_enabled:
+            return Response(
+                {'error': 'Face punch-in/out is currently disabled for this organisation.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        # ─────────────────────────────────────────────────────────────────────
+
         # ── 3. Load all registered faces for this tenant ──────────────────────
         all_faces = (
             EmployeeFaceData.objects
@@ -2450,6 +2475,15 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
         # ── 2. Tenant scope from the device token ─────────────────────────────
         device_user = request.user
         admin_owner = _get_admin_owner(device_user)
+
+        # ── Face punch toggle gate ────────────────────────────────────────────
+        _auto_settings = AttendanceSettings.objects.filter(admin_owner=admin_owner).order_by('-id').first()
+        if _auto_settings and not _auto_settings.face_punch_enabled:
+            return Response(
+                {'error': 'Face punch-in/out is currently disabled for this organisation.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        # ─────────────────────────────────────────────────────────────────────
 
         # ── 3. Load all registered faces for this tenant ──────────────────────
         all_faces = (
@@ -2926,6 +2960,16 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
         if not image_data:
             return Response({'error': 'Image is required for face check-in.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # ── Face punch toggle gate ────────────────────────────────────────────
+        admin_owner = _get_admin_owner(user)
+        _face_settings = AttendanceSettings.objects.filter(admin_owner=admin_owner).order_by('-id').first()
+        if _face_settings and not _face_settings.face_punch_enabled:
+            return Response(
+                {'error': 'Face punch-in/out is currently disabled for this organisation.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        # ─────────────────────────────────────────────────────────────────────
+
         verified, msg = self._verify_face(user, image_data)
         if not verified:
             return Response({'error': msg}, status=status.HTTP_403_FORBIDDEN)
@@ -2942,11 +2986,10 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
 
         today = timezone.now().date()
         current_time = timezone.now()
-        admin_owner = _get_admin_owner(user)
 
         # Geofence enforcement runs first — no point hitting the DB for
         # serializer validation if the location is already blocked.
-        settings_obj = AttendanceSettings.objects.filter(admin_owner=admin_owner).order_by('-id').first()
+        settings_obj = _face_settings
         allowed, geo_error, _ = validate_geofence(user, latitude, longitude, settings_obj)
         if not allowed:
             return Response({'error': geo_error}, status=status.HTTP_403_FORBIDDEN)
@@ -2995,6 +3038,16 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
         if not image_data:
             return Response({'error': 'Image is required for face check-out.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # ── Face punch toggle gate ────────────────────────────────────────────
+        admin_owner = _get_admin_owner(user)
+        _face_co_settings = AttendanceSettings.objects.filter(admin_owner=admin_owner).order_by('-id').first()
+        if _face_co_settings and not _face_co_settings.face_punch_enabled:
+            return Response(
+                {'error': 'Face punch-in/out is currently disabled for this organisation.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        # ─────────────────────────────────────────────────────────────────────
+
         verified, msg = self._verify_face(user, image_data)
         if not verified:
             return Response({'error': msg}, status=status.HTTP_403_FORBIDDEN)
@@ -3008,10 +3061,9 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
 
         today = timezone.now().date()
         current_time = timezone.now()
-        admin_owner = _get_admin_owner(user)
 
         # Geofence enforcement runs first
-        settings_obj = AttendanceSettings.objects.filter(admin_owner=admin_owner).order_by('-id').first()
+        settings_obj = _face_co_settings
         allowed, geo_error, _ = validate_geofence(user, latitude, longitude, settings_obj)
         if not allowed:
             return Response({'error': geo_error}, status=status.HTTP_403_FORBIDDEN)

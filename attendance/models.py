@@ -297,6 +297,23 @@ class AttendanceSettings(models.Model):
         help_text="Allowed check-in/out radius in metres for IN_OFFICE users"
     )
 
+    # ── Punch-method toggles ─────────────────────────────────────────────────
+    face_punch_enabled = models.BooleanField(
+        default=True,
+        help_text=(
+            "When True the face-recognition kiosk/auto-punch endpoints are active. "
+            "Set to False to disable face punch-in/out for this tenant."
+        ),
+    )
+    normal_checkin_enabled = models.BooleanField(
+        default=True,
+        help_text=(
+            "When True employees can use the standard check-in / check-out endpoints. "
+            "Set to False to disable normal (non-face) check-in/out."
+        ),
+    )
+    # ─────────────────────────────────────────────────────────────────────────
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

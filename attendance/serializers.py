@@ -543,6 +543,9 @@ class AttendanceSettingsSerializer(serializers.ModelSerializer):
             'grace_period_minutes', 'minimum_hours_full_day',
             'minimum_hours_half_day',
             'office_latitude', 'office_longitude', 'office_radius_meters',
+            # Punch-method toggles
+            'face_punch_enabled',
+            'normal_checkin_enabled',
             # Tenant – injected by the view, never from client
             'admin_owner',
             'created_at', 'updated_at',
