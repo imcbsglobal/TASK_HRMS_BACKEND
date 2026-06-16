@@ -154,6 +154,8 @@ class SalaryIncrementHistorySerializer(serializers.ModelSerializer):
 
 
 class EmployeeAssetSerializer(serializers.ModelSerializer):
+    return_date = serializers.DateField(required=False, allow_null=True)
+
     class Meta:
         model = EmployeeAsset
         fields = '__all__'
