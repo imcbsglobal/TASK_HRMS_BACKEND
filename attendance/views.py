@@ -910,8 +910,123 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 
         return Response(result, status=status.HTTP_200_OK)
 
+    @action(detail=False, methods=['get'], url_path='today-summary')
+    def today_summary(self, request):
+        """
+        Admin: returns today's attendance counts across all employees.
+        GET /api/attendance/today-summary/
+        """
+        if not _is_admin(request.user):
+            return Response({'error': 'Admin access required.'}, status=status.HTTP_403_FORBIDDEN)
 
-# ─────────────────────────────────────────────────────────────────────────────
+        today = timezone.now().date()
+        admin_owner = _get_admin_owner(request.user)
+
+        qs = Attendance.objects.filter(
+            admin_owner=admin_owner,
+            date=today,
+        )
+
+        data = {
+            'date': str(today),
+            'present':  qs.filter(status='present').count(),
+            'absent':   qs.filter(status='absent').count(),
+            'late':     qs.filter(status='late').count(),
+            'half_day': qs.filter(status='half_day').count(),
+            'leave':    qs.filter(status='leave').count(),
+            'total':    qs.count(),
+        }
+
+        return Response(data, status=status.HTTP_200_OK)
+    
+    @action(detail=False, methods=['get'], url_path='total-requests')
+    def total_requests(self, request):
+        """
+        Admin: returns total and pending count of all request types.
+        GET /api/attendance/total-requests/
+        """
+        if not _is_admin(request.user):
+            return Response({'error': 'Admin access required.'}, status=status.HTTP_403_FORBIDDEN)
+
+        admin_owner = _get_admin_owner(request.user)
+
+        leave_qs           = LeaveRequest.objects.filter(admin_owner=admin_owner)
+        late_arrival_qs    = LateArrivalRequest.objects.filter(admin_owner=admin_owner)
+        early_departure_qs = EarlyDepartureRequest.objects.filter(admin_owner=admin_owner)
+        wfh_qs             = WFHRequest.objects.filter(admin_owner=admin_owner)
+        salary_advance_qs  = SalaryAdvanceRequest.objects.filter(admin_owner=admin_owner)
+
+        return Response({
+            'leave_requests':            {'total': leave_qs.count(),           'pending': leave_qs.filter(status='pending').count()},
+            'late_arrival_requests':     {'total': late_arrival_qs.count(),    'pending': late_arrival_qs.filter(status='pending').count()},
+            'early_departure_requests':  {'total': early_departure_qs.count(), 'pending': early_departure_qs.filter(status='pending').count()},
+            'wfh_requests':              {'total': wfh_qs.count(),             'pending': wfh_qs.filter(status='pending').count()},
+            'salary_advance_requests':   {'total': salary_advance_qs.count(),  'pending': salary_advance_qs.filter(status='pending').count()},
+            'overall': {
+                'total':   leave_qs.count() + late_arrival_qs.count() + early_departure_qs.count() + wfh_qs.count() + salary_advance_qs.count(),
+                'pending': leave_qs.filter(status='pending').count() + late_arrival_qs.filter(status='pending').count() + early_departure_qs.filter(status='pending').count() + wfh_qs.filter(status='pending').count() + salary_advance_qs.filter(status='pending').count(),
+            }
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], url_path='total-requests')
+    def total_requests(self, request):
+        if not _is_admin(request.user):
+            return Response({'error': 'Admin access required.'}, status=status.HTTP_403_FORBIDDEN)
+        admin_owner = _get_admin_owner(request.user)
+        leave_qs            = LeaveRequest.objects.filter(admin_owner=admin_owner)
+        late_arrival_qs     = LateArrivalRequest.objects.filter(admin_owner=admin_owner)
+        early_departure_qs  = EarlyDepartureRequest.objects.filter(admin_owner=admin_owner)
+        wfh_qs              = WFHRequest.objects.filter(admin_owner=admin_owner)
+        salary_advance_qs   = SalaryAdvanceRequest.objects.filter(admin_owner=admin_owner)
+        return Response({
+            'leave_requests':           {'total': leave_qs.count(),           'pending': leave_qs.filter(status='pending').count()},
+            'late_arrival_requests':    {'total': late_arrival_qs.count(),    'pending': late_arrival_qs.filter(status='pending').count()},
+            'early_departure_requests': {'total': early_departure_qs.count(), 'pending': early_departure_qs.filter(status='pending').count()},
+            'wfh_requests':             {'total': wfh_qs.count(),             'pending': wfh_qs.filter(status='pending').count()},
+            'salary_advance_requests':  {'total': salary_advance_qs.count(),  'pending': salary_advance_qs.filter(status='pending').count()},
+            'overall': {
+                'total':   leave_qs.count() + late_arrival_qs.count() + early_departure_qs.count() + wfh_qs.count() + salary_advance_qs.count(),
+                'pending': leave_qs.filter(status='pending').count() + late_arrival_qs.filter(status='pending').count() + early_departure_qs.filter(status='pending').count() + wfh_qs.filter(status='pending').count() + salary_advance_qs.filter(status='pending').count(),
+            }
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], url_path='attendance-percentage')
+    def attendance_percentage(self, request):
+        if not _is_admin(request.user):
+            return Response({'error': 'Admin access required.'}, status=status.HTTP_403_FORBIDDEN)
+        admin_owner = _get_admin_owner(request.user)
+        year  = int(request.query_params.get('year',  timezone.now().year))
+        month = int(request.query_params.get('month', timezone.now().month))
+        first_day = datetime(year, month, 1).date()
+        last_day  = datetime(year, month, monthrange(year, month)[1]).date()
+        today     = timezone.now().date()
+        effective_end = min(last_day, today)
+        sunday_working = _is_sunday_working(admin_owner)
+        working_days = 0
+        current = first_day
+        while current <= effective_end:
+            if _is_working_day(current, sunday_working):
+                working_days += 1
+            current += timedelta(days=1)
+        qs = Attendance.objects.filter(admin_owner=admin_owner, date__gte=first_day, date__lte=effective_end)
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        total_employees = User.objects.filter(admin_owner=admin_owner, is_active=True).count()
+        expected = total_employees * working_days
+        present_count = qs.filter(status__in=['present', 'late', 'half_day']).count()
+        percentage = round((present_count / expected) * 100, 2) if expected > 0 else 0.0
+        return Response({
+            'year':                  year,
+            'month':                 month,
+            'total_employees':       total_employees,
+            'working_days':          working_days,
+            'expected':              expected,
+            'present':               present_count,
+            'absent':                qs.filter(status='absent').count(),
+            'leave':                 qs.filter(status='leave').count(),
+            'attendance_percentage': percentage,
+        }, status=status.HTTP_200_OK)
+    # ─────────────────────────────────────────────────────────────────────────────
 # LATE ARRIVAL REQUEST VIEWSET
 # ─────────────────────────────────────────────────────────────────────────────
 
