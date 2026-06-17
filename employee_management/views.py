@@ -18,6 +18,8 @@ from .serializers import (
     EmployeeDocumentSerializer,
 )
 
+from activitylog.utils import log_activity
+
 User = get_user_model()
 
 # Statuses that represent a fully offboarded employee
@@ -151,6 +153,15 @@ class EmployeeListCreateView(APIView):
         admin = _get_admin_owner(request.user)  # None for SUPER_ADMIN
         serializer.save(admin_owner=admin)
 
+        employee = serializer.instance
+        log_activity(
+            user=request.user,
+            action_type='CREATE',
+            module='Employee',
+            description=f"Created employee {employee.first_name} {employee.last_name} (ID: {employee.employee_id})",
+            request=request,
+        )
+
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -242,6 +253,14 @@ class EmployeeDetailView(APIView):
         if new_status in OFFBOARDED_STATUSES and old_status not in OFFBOARDED_STATUSES:
             _deactivate_linked_user(updated_employee)
 
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Employee',
+            description=f"Updated employee {updated_employee.first_name} {updated_employee.last_name} (ID: {updated_employee.employee_id})",
+            request=request,
+        )
+
         return Response(serializer.data)
 
     def delete(self, request, pk):
@@ -255,7 +274,16 @@ class EmployeeDetailView(APIView):
         if err:
             return err
 
+        emp_name = f"{employee.first_name} {employee.last_name}"
+        emp_id = employee.employee_id
         employee.delete()
+        log_activity(
+            user=request.user,
+            action_type='DELETE',
+            module='Employee',
+            description=f"Deleted employee {emp_name} (ID: {emp_id})",
+            request=request,
+        )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -578,6 +606,14 @@ class DepartmentListCreateView(APIView):
 
         admin = _get_admin_owner(request.user)
         serializer.save(admin_owner=admin)
+        dept = serializer.instance
+        log_activity(
+            user=request.user,
+            action_type='CREATE',
+            module='Employee',
+            description=f"Created department '{dept.name}'",
+            request=request,
+        )
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -612,6 +648,13 @@ class DepartmentDetailView(APIView):
         serializer = DepartmentSerializer(dept, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Employee',
+            description=f"Updated department '{dept.name}'",
+            request=request,
+        )
         return Response(serializer.data)
 
     def delete(self, request, pk):
@@ -623,7 +666,15 @@ class DepartmentDetailView(APIView):
         dept, err = self._get_department(request, pk)
         if err:
             return err
+        dept_name = dept.name
         dept.delete()
+        log_activity(
+            user=request.user,
+            action_type='DELETE',
+            module='Employee',
+            description=f"Deleted department '{dept_name}'",
+            request=request,
+        )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

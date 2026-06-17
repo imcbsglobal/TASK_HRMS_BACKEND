@@ -16,6 +16,7 @@ from .serializers import (
     CompanySettingsSerializer,
 )
 from .models import CompanySettings
+from activitylog.utils import log_activity
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -158,6 +159,15 @@ class LoginView(APIView):
             if tenant_admin else True
         )
 
+        # Log the login activity
+        log_activity(
+            user=user,
+            action_type='LOGIN',
+            module='Authentication',
+            description=f'User {user.username} logged in successfully',
+            request=request
+        )
+
         return Response({
             "access":    str(refresh.access_token),
             "refresh":   str(refresh),
@@ -193,6 +203,14 @@ class LogoutView(APIView):
                 token.blacklist()
             except TokenError:
                 pass
+        # Log the logout activity
+        log_activity(
+            user=request.user,
+            action_type='LOGOUT',
+            module='Authentication',
+            description=f'User {request.user.username} logged out',
+            request=request
+        )
         return Response({"message": "Logged out successfully"}, status=status.HTTP_200_OK)
 
 
@@ -265,6 +283,13 @@ class UserCreateView(APIView):
         serializer = UserCreateSerializer(data=data)
         if serializer.is_valid():
             user = serializer.save()
+            log_activity(
+                user=request.user,
+                action_type='CREATE',
+                module='User Management',
+                description=f"Created user '{user.username}' with role {user.role}",
+                request=request,
+            )
             return Response(
                 {
                     "message":   "User created successfully",

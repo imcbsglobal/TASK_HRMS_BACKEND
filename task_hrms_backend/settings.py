@@ -69,6 +69,7 @@ INSTALLED_APPS = [
     'payroll',
     'watsapp_config',
     'experience_certificate',
+    'activitylog',
     'storages',
 ]
 

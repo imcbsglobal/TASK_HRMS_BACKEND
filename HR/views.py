@@ -15,6 +15,7 @@ from .serializers import (
 )
 from .utils import extract_text, extract_fields
 from .offer_pdf import generate_offer_letter_pdf
+from activitylog.utils import log_activity
 
 # ─────────────────────────────────────────────────────────────
 #  Tenant helpers
@@ -106,6 +107,13 @@ class PipelineStageListView(APIView):
         if serializer.is_valid():
             admin = _get_admin_owner(request.user)
             serializer.save(admin_owner=admin)
+            log_activity(
+                user=request.user,
+                action_type='CREATE',
+                module='Recruitment',
+                description=f"Created pipeline stage '{serializer.instance.label}'",
+                request=request,
+            )
             return Response(serializer.data, status=201)
         return Response(serializer.errors, status=400)
 
@@ -131,6 +139,13 @@ class PipelineStageDetailView(APIView):
         serializer = PipelineStageSerializer(stage, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
+            log_activity(
+                user=request.user,
+                action_type='UPDATE',
+                module='Recruitment',
+                description=f"Updated pipeline stage '{stage.label}'",
+                request=request,
+            )
             return Response(serializer.data)
         return Response(serializer.errors, status=400)
 
@@ -140,7 +155,15 @@ class PipelineStageDetailView(APIView):
             return Response({"error": "Stage not found"}, status=404)
 
         _candidate_qs(request.user).filter(status=stage.key).update(status="shortlisted")
+        label = stage.label
         stage.delete()
+        log_activity(
+            user=request.user,
+            action_type='DELETE',
+            module='Recruitment',
+            description=f"Deleted pipeline stage '{label}'",
+            request=request,
+        )
         return Response({"success": True})
 
 
@@ -175,6 +198,13 @@ class CandidateUploadView(APIView):
         if serializer.is_valid():
             admin = _get_admin_owner(request.user)
             serializer.save(admin_owner=admin, status="shortlisted")
+            log_activity(
+                user=request.user,
+                action_type='CREATE',
+                module='Recruitment',
+                description=f"Uploaded CV and created candidate '{serializer.instance.name}'",
+                request=request,
+            )
             return Response(serializer.data)
         return Response(serializer.errors, status=400)
 
@@ -206,6 +236,13 @@ class CandidateStatusUpdateView(APIView):
 
         candidate.status = new_status
         candidate.save()
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Recruitment',
+            description=f"Updated candidate '{candidate.name}' status to '{new_status}'",
+            request=request,
+        )
         return Response({"success": True})
 
 
@@ -220,6 +257,13 @@ class CandidateUpdateView(APIView):
                 if field in request.data:
                     setattr(candidate, field, request.data[field])
             candidate.save()
+            log_activity(
+                user=request.user,
+                action_type='UPDATE',
+                module='Recruitment',
+                description=f"Updated candidate '{candidate.name}'",
+                request=request,
+            )
             return Response(CandidateSerializer(candidate).data)
         except Candidate.DoesNotExist:
             return Response({"error": "Candidate not found"}, status=404)
@@ -235,6 +279,13 @@ class CandidateDeleteView(APIView):
             return Response({"error": "Candidate not found"}, status=404)
 
         candidate.delete()   # signals in models.py auto-delete the CV from R2
+        log_activity(
+            user=request.user,
+            action_type='DELETE',
+            module='Recruitment',
+            description=f"Deleted candidate '{candidate.name}'",
+            request=request,
+        )
         return Response({"success": True}, status=200)
 
 
@@ -262,6 +313,13 @@ class CandidateRatingView(APIView):
         serializer = CandidateRatingSerializer(rating, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Recruitment',
+            description=f"Rated candidate '{candidate.name}'",
+            request=request,
+        )
         return Response(serializer.data)
 
 
@@ -305,6 +363,13 @@ class OfferLetterView(APIView):
         serializer = OfferLetterSerializer(offer, data=data, partial=True)
         if serializer.is_valid():
             serializer.save(candidate=candidate)
+            log_activity(
+                user=request.user,
+                action_type='CREATE' if created else 'UPDATE',
+                module='Recruitment',
+                description=f"{'Created' if created else 'Updated'} offer letter for candidate '{candidate.name}'",
+                request=request,
+            )
             return Response(serializer.data, status=201 if created else 200)
         return Response(serializer.errors, status=400)
 
@@ -393,6 +458,14 @@ class SendOfferLetterView(APIView):
             offer.status = "sent"
             offer.save()
 
+            log_activity(
+                user=request.user,
+                action_type='OTHER',
+                module='Recruitment',
+                description=f"Sent offer letter for '{offer.position}' to candidate '{candidate.name}' ({candidate.email})",
+                request=request,
+            )
+
             return Response({"success": True, "message": f"Offer letter sent to {candidate.email}"})
 
         except Exception as e:
@@ -438,6 +511,13 @@ class UploadCVListView(APIView):
         if serializer.is_valid():
             admin = _get_admin_owner(request.user)
             serializer.save(admin_owner=admin, status="uploaded")
+            log_activity(
+                user=request.user,
+                action_type='CREATE',
+                module='Recruitment',
+                description=f"Uploaded CV for candidate '{serializer.instance.name}'",
+                request=request,
+            )
             return Response(serializer.data, status=201)
         return Response(serializer.errors, status=400)
 
@@ -474,6 +554,13 @@ class UploadCVStatusUpdateView(APIView):
 
         candidate.status = new_status
         candidate.save()
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Recruitment',
+            description=f"Updated uploaded CV candidate '{candidate.name}' status to '{new_status}'",
+            request=request,
+        )
         return Response(CandidateSerializer(candidate).data)
 
 
@@ -501,5 +588,13 @@ class UploadCVInterviewDateView(APIView):
         candidate.interview_time = request.data.get("interview_time", "")
         candidate.interview_note = request.data.get("interview_note", "")
         candidate.save()
+
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Recruitment',
+            description=f"Set interview date for candidate '{candidate.name}' to {candidate.interview_date or 'cleared'}",
+            request=request,
+        )
 
         return Response(CandidateSerializer(candidate).data)

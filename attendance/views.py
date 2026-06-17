@@ -56,6 +56,7 @@ except Exception:
 
 from .models import Attendance, AttendanceSettings, LeaveRequest, LateArrivalRequest, EarlyDepartureRequest, EmployeeFaceData, BreakRecord, SalaryAdvanceRequest, WFHRequest
 from .geofence import validate_geofence
+from activitylog.utils import log_activity
 
 # ── WhatsApp notifications (fire-and-forget, never raises) ───────────────────
 try:
@@ -405,6 +406,14 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         )
         # ─────────────────────────────────────────────────────────────────────
 
+        log_activity(
+            user=user,
+            action_type='CREATE',
+            module='Attendance',
+            description=f"Checked in at {ci_local.strftime('%I:%M %p')}",
+            request=request,
+        )
+
         return Response({
             'message': 'Successfully checked in',
             'attendance': AttendanceSerializer(attendance).data
@@ -471,6 +480,14 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             },
         )
         # ─────────────────────────────────────────────────────────────────────
+
+        log_activity(
+            user=user,
+            action_type='UPDATE',
+            module='Attendance',
+            description=f"Checked out at {co_local.strftime('%I:%M %p')}",
+            request=request,
+        )
 
         return Response({
             'message': 'Successfully checked out',
@@ -1119,6 +1136,14 @@ class LateArrivalRequestViewSet(viewsets.ModelViewSet):
         )
         # ─────────────────────────────────────────────────────────────────────
 
+        log_activity(
+            user=request.user,
+            action_type='CREATE',
+            module='Attendance',
+            description=f"Submitted late arrival request for {instance.date}",
+            request=request,
+        )
+
         return Response(
             LateArrivalRequestSerializer(instance).data,
             status=status.HTTP_201_CREATED,
@@ -1132,6 +1157,13 @@ class LateArrivalRequestViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Only pending requests can be cancelled.'}, status=status.HTTP_400_BAD_REQUEST)
         instance.status = 'cancelled'
         instance.save(update_fields=['status', 'updated_at'])
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Attendance',
+            description=f"Cancelled late arrival request for {instance.date}",
+            request=request,
+        )
         return Response({'message': 'Late arrival request cancelled.'}, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'], url_path='my-requests')
@@ -1276,6 +1308,14 @@ class LateArrivalRequestViewSet(viewsets.ModelViewSet):
             )
         # ─────────────────────────────────────────────────────────────────────
 
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Attendance',
+            description=f"{action_type.capitalize()}d late arrival request for {late_req.user.username} on {late_req.date}",
+            request=request,
+        )
+
         return Response({
             'message': message,
             'late_arrival_request': LateArrivalRequestSerializer(late_req).data,
@@ -1359,6 +1399,19 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         )
         # ─────────────────────────────────────────────────────────────────────
 
+        leave_label = (
+            leave_request.leave_type_obj.name
+            if leave_request.leave_type_obj
+            else leave_request.get_leave_type_display()
+        )
+        log_activity(
+            user=request.user,
+            action_type='CREATE',
+            module='Attendance',
+            description=f"Submitted leave request ({leave_label}) from {leave_request.start_date} to {leave_request.end_date}",
+            request=request,
+        )
+
         return Response(
             LeaveRequestSerializer(leave_request).data,
             status=status.HTTP_201_CREATED
@@ -1370,8 +1423,19 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             return Response({'error': 'You cannot cancel this leave request.'}, status=status.HTTP_403_FORBIDDEN)
         if instance.status != 'pending':
             return Response({'error': 'Only pending leave requests can be cancelled.'}, status=status.HTTP_400_BAD_REQUEST)
+        leave_label = (
+            instance.leave_type_obj.name if instance.leave_type_obj
+            else instance.get_leave_type_display()
+        )
         instance.status = 'cancelled'
         instance.save(update_fields=['status', 'updated_at'])
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Attendance',
+            description=f"Cancelled leave request ({leave_label}) from {instance.start_date} to {instance.end_date}",
+            request=request,
+        )
         return Response({'message': 'Leave request cancelled successfully.'}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='review')
@@ -1609,6 +1673,14 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             )
         # ─────────────────────────────────────────────────────────────────────
 
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Attendance',
+            description=f"{action_type.capitalize()}d leave request ({leave_label}) for {leave_request.user.username} from {leave_request.start_date} to {leave_request.end_date}",
+            request=request,
+        )
+
         return Response({
             'message': message,
             'leave_request': LeaveRequestSerializer(leave_request).data
@@ -1676,6 +1748,13 @@ class AttendanceSettingsViewSet(viewsets.ModelViewSet):
             serializer = self.get_serializer(settings_obj, data=request.data, partial=True)
             serializer.is_valid(raise_exception=True)
             serializer.save()
+            log_activity(
+                user=request.user,
+                action_type='UPDATE',
+                module='Attendance',
+                description='Updated Attendance Settings',
+                request=request,
+            )
             return Response(serializer.data, status=status.HTTP_200_OK)
 
         # GET
@@ -1699,6 +1778,13 @@ class AttendanceSettingsViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(settings_obj, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Attendance',
+            description='Updated Attendance Settings',
+            request=request,
+        )
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
@@ -1779,6 +1865,14 @@ class EarlyDepartureRequestViewSet(viewsets.ModelViewSet):
         )
         # ─────────────────────────────────────────────────────────────────────
 
+        log_activity(
+            user=request.user,
+            action_type='CREATE',
+            module='Attendance',
+            description=f"Submitted early departure request for {instance.date}",
+            request=request,
+        )
+
         return Response(
             EarlyDepartureRequestSerializer(instance).data,
             status=status.HTTP_201_CREATED,
@@ -1792,6 +1886,13 @@ class EarlyDepartureRequestViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Only pending requests can be cancelled.'}, status=status.HTTP_400_BAD_REQUEST)
         instance.status = 'cancelled'
         instance.save(update_fields=['status', 'updated_at'])
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Attendance',
+            description=f"Cancelled early departure request for {instance.date}",
+            request=request,
+        )
         return Response({'message': 'Early departure request cancelled.'}, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'], url_path='my-requests')
@@ -1940,6 +2041,14 @@ class EarlyDepartureRequestViewSet(viewsets.ModelViewSet):
                 },
             )
         # ─────────────────────────────────────────────────────────────────────
+
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Attendance',
+            description=f"{action_type.capitalize()}d early departure request for {early_req.user.username} on {early_req.date}",
+            request=request,
+        )
 
         return Response({
             'message': message,
@@ -3153,6 +3262,14 @@ class SalaryAdvanceRequestViewSet(viewsets.ModelViewSet):
         )
         # ─────────────────────────────────────────────────────────────────────
 
+        log_activity(
+            user=request.user,
+            action_type='CREATE',
+            module='Attendance',
+            description=f"Submitted salary advance request for amount {instance.amount}",
+            request=request,
+        )
+
         return Response(
             SalaryAdvanceRequestSerializer(instance).data,
             status=status.HTTP_201_CREATED,
@@ -3174,6 +3291,13 @@ class SalaryAdvanceRequestViewSet(viewsets.ModelViewSet):
             )
         instance.status = 'cancelled'
         instance.save(update_fields=['status', 'updated_at'])
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Attendance',
+            description=f"Cancelled salary advance request for amount {instance.amount}",
+            request=request,
+        )
         return Response(
             SalaryAdvanceRequestSerializer(instance).data,
             status=status.HTTP_200_OK,
@@ -3241,6 +3365,14 @@ class SalaryAdvanceRequestViewSet(viewsets.ModelViewSet):
                 },
             )
         # ─────────────────────────────────────────────────────────────────────
+
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Attendance',
+            description=f"{action_val.capitalize()}d salary advance request for {instance.user.username} (amount: {instance.amount})",
+            request=request,
+        )
 
         return Response(
             SalaryAdvanceRequestSerializer(instance).data,
@@ -3359,6 +3491,14 @@ class WFHRequestViewSet(viewsets.ModelViewSet):
         )
         # ─────────────────────────────────────────────────────────────────────
 
+        log_activity(
+            user=request.user,
+            action_type='CREATE',
+            module='Attendance',
+            description=f"Submitted WFH request for {instance.date}",
+            request=request,
+        )
+
         return Response(
             WFHRequestSerializer(instance).data,
             status=status.HTTP_201_CREATED,
@@ -3378,6 +3518,13 @@ class WFHRequestViewSet(viewsets.ModelViewSet):
             )
         instance.status = 'cancelled'
         instance.save(update_fields=['status', 'updated_at'])
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Attendance',
+            description=f"Cancelled WFH request for {instance.date}",
+            request=request,
+        )
         return Response({'message': 'WFH request cancelled.'}, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'], url_path='my-requests')
@@ -3494,5 +3641,13 @@ class WFHRequestViewSet(viewsets.ModelViewSet):
         wfh_req.reviewed_at = timezone.now()
         wfh_req.admin_notes = admin_notes
         wfh_req.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'admin_notes', 'updated_at'])
+
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Attendance',
+            description=f"{action_type.capitalize()}d WFH request for {wfh_req.user.username} on {wfh_req.date}",
+            request=request,
+        )
 
         return Response({'message': message, 'request': WFHRequestSerializer(wfh_req).data})

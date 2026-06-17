@@ -16,6 +16,7 @@ from .serializers import (
     PayrollPolicySerializer,
     SectionSerializer,
 )
+from activitylog.utils import ActivityLogMixin, log_activity
 
 
 def _get_admin_owner(user):
@@ -29,8 +30,10 @@ def _get_admin_owner(user):
     return None  # SUPER_ADMIN
 
 
-class LeaveTypeViewSet(viewsets.ModelViewSet):
+class LeaveTypeViewSet(ActivityLogMixin, viewsets.ModelViewSet):
     """ViewSet for Leave Type CRUD operations"""
+    activity_log_module = "Master"
+    activity_log_object_name = "Leave Type"
     queryset = LeaveType.objects.all()
     serializer_class = LeaveTypeSerializer
     permission_classes = [IsAuthenticated]
@@ -70,8 +73,10 @@ class LeaveTypeViewSet(viewsets.ModelViewSet):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-class AllowanceViewSet(viewsets.ModelViewSet):
+class AllowanceViewSet(ActivityLogMixin, viewsets.ModelViewSet):
     """ViewSet for Allowance CRUD operations"""
+    activity_log_module = "Master"
+    activity_log_object_name = "Allowance"
     queryset = Allowance.objects.all()
     serializer_class = AllowanceSerializer
     permission_classes = [IsAuthenticated]
@@ -129,8 +134,10 @@ class AllowanceViewSet(viewsets.ModelViewSet):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-class DeductionViewSet(viewsets.ModelViewSet):
+class DeductionViewSet(ActivityLogMixin, viewsets.ModelViewSet):
     """ViewSet for Deduction CRUD operations"""
+    activity_log_module = "Master"
+    activity_log_object_name = "Deduction"
     queryset = Deduction.objects.all()
     serializer_class = DeductionSerializer
     permission_classes = [IsAuthenticated]
@@ -188,8 +195,10 @@ class DeductionViewSet(viewsets.ModelViewSet):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-class HolidayViewSet(viewsets.ModelViewSet):
+class HolidayViewSet(ActivityLogMixin, viewsets.ModelViewSet):
     """ViewSet for Holiday CRUD operations"""
+    activity_log_module = "Master"
+    activity_log_object_name = "Holiday"
     queryset = Holiday.objects.all()
     serializer_class = HolidaySerializer
     permission_classes = [IsAuthenticated]
@@ -232,8 +241,10 @@ class HolidayViewSet(viewsets.ModelViewSet):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-class AnnouncementViewSet(viewsets.ModelViewSet):
+class AnnouncementViewSet(ActivityLogMixin, viewsets.ModelViewSet):
     """ViewSet for Announcement CRUD operations"""
+    activity_log_module = "Master"
+    activity_log_object_name = "Announcement"
     queryset = Announcement.objects.all()
     serializer_class = AnnouncementSerializer
     permission_classes = [IsAuthenticated]
@@ -276,8 +287,10 @@ class AnnouncementViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(announcements, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-class JobTitleViewSet(viewsets.ModelViewSet):
+class JobTitleViewSet(ActivityLogMixin, viewsets.ModelViewSet):
     """ViewSet for Job Title CRUD operations"""
+    activity_log_module = "Master"
+    activity_log_object_name = "Job Title"
     queryset = JobTitle.objects.all()
     serializer_class = JobTitleSerializer
     permission_classes = [IsAuthenticated]
@@ -369,6 +382,13 @@ class PayrollPolicyViewSet(viewsets.ViewSet):
             serializer = PayrollPolicySerializer(obj, data=request.data, partial=False)
             serializer.is_valid(raise_exception=True)
             serializer.save(admin_owner=admin)
+            log_activity(
+                user=request.user,
+                action_type='UPDATE',
+                module='Master',
+                description='Updated Payroll Policy',
+                request=request,
+            )
             return Response(serializer.data, status=status.HTTP_200_OK)
 
         # PATCH — shallow merge
@@ -379,11 +399,20 @@ class PayrollPolicyViewSet(viewsets.ViewSet):
             merged = {**obj.policy_data, **incoming}
             obj.policy_data = merged
             obj.save(update_fields=['policy_data', 'updated_at'])
+            log_activity(
+                user=request.user,
+                action_type='UPDATE',
+                module='Master',
+                description='Updated Payroll Policy (partial)',
+                request=request,
+            )
             serializer = PayrollPolicySerializer(obj)
             return Response(serializer.data, status=status.HTTP_200_OK)
         
-class SectionViewSet(viewsets.ModelViewSet):
+class SectionViewSet(ActivityLogMixin, viewsets.ModelViewSet):
     """ViewSet for Section CRUD operations"""
+    activity_log_module = "Master"
+    activity_log_object_name = "Section"
     queryset = Section.objects.all()
     serializer_class = SectionSerializer
     permission_classes = [IsAuthenticated]

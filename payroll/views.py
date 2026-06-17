@@ -13,6 +13,7 @@ from .serializers import PayrollSerializer, PayrollDetailSerializer, PayrollCalc
 from employee_management.models import Employee
 from master.models import Allowance, Deduction, PayrollPolicy
 from attendance.models import Attendance, LeaveRequest
+from activitylog.utils import ActivityLogMixin, log_activity
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -902,8 +903,10 @@ def _build_payroll_dict(employee, year, month, admin_owner=None):
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-class PayrollViewSet(viewsets.ModelViewSet):
+class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
     """ViewSet for Payroll CRUD operations"""
+    activity_log_module = "Payroll"
+    activity_log_object_name = "Payroll"
     queryset           = Payroll.objects.all()
     serializer_class   = PayrollSerializer
     permission_classes = [IsAuthenticated]
