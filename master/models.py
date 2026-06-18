@@ -387,6 +387,11 @@ class Announcement(models.Model):
         default=True,
         help_text="Whether this announcement is visible"
     )
+    duration_days = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Number of days this announcement stays visible after its date. Leave blank for no expiry."
+    )
 
     # ── Tenant isolation ──────────────────────────────────────────────────────
     admin_owner = models.ForeignKey(
@@ -406,6 +411,23 @@ class Announcement(models.Model):
         ordering = ['-is_pinned', '-date', '-created_at']
         verbose_name = 'Announcement'
         verbose_name_plural = 'Announcements'
+
+    @property
+    def expiry_date(self):
+        """Returns the date after which this announcement is no longer visible, or None if no expiry."""
+        if self.duration_days is not None:
+            from datetime import timedelta
+            return self.date + timedelta(days=self.duration_days)
+        return None
+
+    @property
+    def is_expired(self):
+        """Returns True if the announcement has passed its expiry date."""
+        exp = self.expiry_date
+        if exp is None:
+            return False
+        from django.utils import timezone
+        return timezone.now().date() > exp
 
     def __str__(self):
         return self.title

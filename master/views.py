@@ -250,6 +250,9 @@ class AnnouncementViewSet(ActivityLogMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        from django.utils import timezone
+        today = timezone.now().date()
+
         user = self.request.user
         if user.role == 'SUPER_ADMIN':
             queryset = Announcement.objects.all()
@@ -272,6 +275,21 @@ class AnnouncementViewSet(ActivityLogMixin, viewsets.ModelViewSet):
             queryset = queryset.filter(
                 Q(title__icontains=search) | Q(body__icontains=search)
             )
+
+        # Exclude announcements whose duration has elapsed.
+        # Keep rows where duration_days is NULL (no expiry)
+        # OR where date + duration_days >= today (not yet expired).
+        # Using extra() for PostgreSQL-compatible date arithmetic:
+        # (date + duration_days * INTERVAL '1 day') >= today
+        from django.db.models.expressions import RawSQL
+        queryset = queryset.filter(
+            Q(duration_days__isnull=True) |
+            Q(id__in=queryset.extra(
+                where=["(master_announcements.date + (master_announcements.duration_days * INTERVAL '1 day')) >= %s"],
+                params=[today]
+            ).values('id'))
+        )
+
         return queryset
 
     def perform_create(self, serializer):
@@ -280,7 +298,7 @@ class AnnouncementViewSet(ActivityLogMixin, viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def dashboard(self, request):
-        """Return latest 4 active announcements for the Dashboard widget (pinned first)"""
+        """Return latest 4 active, non-expired announcements for the Dashboard widget (pinned first)"""
         announcements = self.get_queryset().filter(is_active=True).order_by(
             '-is_pinned', '-date', '-created_at'
         )[:4]

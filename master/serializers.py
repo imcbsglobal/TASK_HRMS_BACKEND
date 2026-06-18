@@ -5,16 +5,19 @@ from .models import LeaveType, Allowance, Deduction, Holiday, Announcement, JobT
 
 class AnnouncementSerializer(serializers.ModelSerializer):
     """Serializer for Announcement model"""
-    tag_display = serializers.CharField(source='get_tag_display', read_only=True)
+    tag_display  = serializers.CharField(source='get_tag_display', read_only=True)
+    expiry_date  = serializers.DateField(read_only=True)
+    is_expired   = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Announcement
         fields = [
             'id', 'title', 'body', 'date', 'tag', 'tag_display',
-            'icon', 'is_pinned', 'is_active',
+            'icon', 'is_pinned', 'is_active', 'duration_days',
+            'expiry_date', 'is_expired',
             'created_at', 'updated_at', 'admin_owner',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'tag_display']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'tag_display', 'expiry_date', 'is_expired']
         extra_kwargs = {
             'admin_owner': {'write_only': True, 'required': False},
         }

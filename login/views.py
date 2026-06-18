@@ -347,6 +347,46 @@ class UserUpdateView(APIView):
         serializer.save()
         user.save()
 
+        # ── Auto-inactivate linked employee when user is deactivated ──────────
+        # If is_active was explicitly set to False, mark the linked employee
+        # record as 'inactive' so it no longer appears in Employee Management.
+        if 'is_active' in data and str(data['is_active']).lower() in ('false', '0') and not user.is_active:
+            from employee_management.models import Employee
+            from django.contrib.auth import get_user_model as _get_user_model
+            _User = _get_user_model()
+
+            # Try to find the employee linked via candidate.user or email match
+            linked_employee = None
+
+            # 1. Via candidate → user FK
+            try:
+                from HR.models import Candidate
+                candidate = Candidate.objects.filter(user=user).first()
+                if candidate:
+                    linked_employee = Employee.objects.filter(candidate=candidate).first()
+            except Exception:
+                pass
+
+            # 2. Fallback: match by email
+            if linked_employee is None and user.email:
+                linked_employee = Employee.objects.filter(email=user.email).first()
+
+            if linked_employee and linked_employee.status not in ('terminated', 'resigned', 'retired', 'offboarded', 'inactive'):
+                linked_employee.status = 'inactive'
+                linked_employee.save(update_fields=['status', 'updated_at'])
+
+                log_activity(
+                    user=request.user,
+                    action_type='UPDATE',
+                    module='Employee',
+                    description=(
+                        f"Auto-inactivated employee {linked_employee.first_name} "
+                        f"{linked_employee.last_name} (ID: {linked_employee.employee_id}) "
+                        f"because linked user account was deactivated."
+                    ),
+                    request=request,
+                )
+
         return Response(
             UserSerializer(user, context={'request': request}).data,
             status=status.HTTP_200_OK,

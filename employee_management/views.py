@@ -25,6 +25,9 @@ User = get_user_model()
 # Statuses that represent a fully offboarded employee
 OFFBOARDED_STATUSES = {'terminated', 'resigned', 'retired', 'offboarded'}
 
+# Status used when the linked user account is deactivated
+USER_INACTIVE_STATUS = 'inactive'
+
 
 # ---------------------------------------------------------------------------
 # Tenant helpers
@@ -91,15 +94,15 @@ def _custom_field_qs(user):
     return CustomFieldDefinition.objects.filter(admin_owner=admin, is_active=True)
 
 
-def _deactivate_linked_user(employee):
+def _delete_linked_user(employee):
     """
-    Deactivate the system User account linked to this employee (if any).
+    Permanently delete the system User account linked to this employee (if any).
 
     Priority:
       1. employee.candidate.user  (cleanest link)
       2. User whose email matches employee.email
 
-    Returns the deactivated User, or None.
+    Returns the deleted username as a string, or None.
     """
     linked_user = None
 
@@ -116,10 +119,10 @@ def _deactivate_linked_user(employee):
     if linked_user is None and employee.email:
         linked_user = User.objects.filter(email=employee.email).first()
 
-    if linked_user and linked_user.is_active:
-        linked_user.is_active = False
-        linked_user.save(update_fields=['is_active'])
-        return linked_user
+    if linked_user:
+        username = linked_user.username
+        linked_user.delete()
+        return username
 
     return None
 
@@ -132,6 +135,12 @@ class EmployeeListCreateView(APIView):
 
     def get(self, request):
         employees = _employee_qs(request.user)
+
+        # ?exclude_offboarded=true  → hide terminated/resigned/retired/offboarded/inactive
+        # Used by Employee Management page; Offboarding page omits this param.
+        if request.query_params.get('exclude_offboarded', '').lower() == 'true':
+            employees = employees.exclude(status__in=OFFBOARDED_STATUSES | {USER_INACTIVE_STATUS})
+
         serializer = EmployeeSerializer(employees, many=True)
         return Response(serializer.data)
 
@@ -248,10 +257,10 @@ class EmployeeDetailView(APIView):
                     created_by=request.user,
                 )
 
-        # Auto-deactivate linked User when transitioning into an offboarded state
+        # Auto-remove linked User when transitioning into an offboarded state
         new_status = updated_employee.status
         if new_status in OFFBOARDED_STATUSES and old_status not in OFFBOARDED_STATUSES:
-            _deactivate_linked_user(updated_employee)
+            _delete_linked_user(updated_employee)
 
         log_activity(
             user=request.user,
@@ -538,12 +547,13 @@ class SalaryIncrementHistoryDetailView(APIView):
 class CompleteOffboardingView(APIView):
     """
     Atomically:
-      1. Sets employee.status = 'terminated'
-      2. Deactivates the linked system User account (via candidate.user or email match)
+      1. Sets employee.status = 'terminated' (record is retained for history)
+      2. Permanently deletes the linked system User account (via candidate.user or email match)
+         so the employee is removed from the user list and can no longer log in
 
     Response includes the updated employee data plus:
-      - user_deactivated: bool
-      - deactivated_username: str | null
+      - user_deleted: bool
+      - deleted_username: str | null
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -568,18 +578,26 @@ class CompleteOffboardingView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Mark employee as terminated
+        # Mark employee as terminated (record kept for offboarding history)
         employee.status = 'terminated'
         employee.save(update_fields=['status', 'updated_at'])
 
-        # Deactivate linked user
-        deactivated_user = _deactivate_linked_user(employee)
+        # Permanently delete linked user account
+        deleted_username = _delete_linked_user(employee)
+
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Employee',
+            description=f"Offboarded employee {employee.first_name} {employee.last_name} (ID: {employee.employee_id}); user account deleted.",
+            request=request,
+        )
 
         serializer = EmployeeSerializer(employee)
         return Response({
             **serializer.data,
-            "user_deactivated":    deactivated_user is not None,
-            "deactivated_username": deactivated_user.username if deactivated_user else None,
+            "user_deleted":     deleted_username is not None,
+            "deleted_username": deleted_username,
         }, status=status.HTTP_200_OK)
 
 
