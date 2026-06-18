@@ -83,6 +83,7 @@ class AllowanceViewSet(ActivityLogMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        _OFFBOARDED = {'terminated', 'resigned', 'retired', 'offboarded', 'inactive'}
         if user.role == 'SUPER_ADMIN':
             queryset = Allowance.objects.select_related('employee').all()
         else:
@@ -90,6 +91,9 @@ class AllowanceViewSet(ActivityLogMixin, viewsets.ModelViewSet):
             if admin is None:
                 return Allowance.objects.none()
             queryset = Allowance.objects.select_related('employee').filter(admin_owner=admin)
+
+        # Exclude records belonging to offboarded / inactive employees
+        queryset = queryset.exclude(employee__status__in=_OFFBOARDED)
         
         # Filter by employee
         employee_id = self.request.query_params.get('employee', None)
@@ -144,6 +148,7 @@ class DeductionViewSet(ActivityLogMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        _OFFBOARDED = {'terminated', 'resigned', 'retired', 'offboarded', 'inactive'}
         if user.role == 'SUPER_ADMIN':
             queryset = Deduction.objects.select_related('employee').all()
         else:
@@ -151,6 +156,9 @@ class DeductionViewSet(ActivityLogMixin, viewsets.ModelViewSet):
             if admin is None:
                 return Deduction.objects.none()
             queryset = Deduction.objects.select_related('employee').filter(admin_owner=admin)
+
+        # Exclude records belonging to offboarded / inactive employees
+        queryset = queryset.exclude(employee__status__in=_OFFBOARDED)
         
         # Filter by employee
         employee_id = self.request.query_params.get('employee', None)

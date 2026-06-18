@@ -28,6 +28,8 @@ class AttendanceSerializer(serializers.ModelSerializer):
     leave_type = serializers.SerializerMethodField()
     leave_type_display = serializers.SerializerMethodField()
     break_records = serializers.SerializerMethodField()
+    check_in_method_display = serializers.SerializerMethodField()
+    check_out_method_display = serializers.SerializerMethodField()
 
     class Meta:
         model = Attendance
@@ -46,6 +48,8 @@ class AttendanceSerializer(serializers.ModelSerializer):
             'total_break_minutes', 'break_records',
             'check_out_waived',
             'is_wfh',
+            'check_in_method', 'check_in_method_display',
+            'check_out_method', 'check_out_method_display',
             # Tenant – injected by the view, never from client
             'admin_owner',
             'created_at', 'updated_at',
@@ -120,6 +124,18 @@ class AttendanceSerializer(serializers.ModelSerializer):
 
     def get_break_records(self, obj):
         return BreakRecordSerializer(obj.breaks.all(), many=True).data
+
+    _METHOD_LABELS = {
+        'face':   '👤 Face',
+        'normal': '📱 Normal',
+        'manual': '✏️ Manual',
+    }
+
+    def get_check_in_method_display(self, obj):
+        return self._METHOD_LABELS.get(obj.check_in_method, None)
+
+    def get_check_out_method_display(self, obj):
+        return self._METHOD_LABELS.get(obj.check_out_method, None)
     
 class BreakRecordSerializer(serializers.ModelSerializer):
     user_name = serializers.SerializerMethodField()

@@ -13,6 +13,12 @@ class Attendance(models.Model):
         ('leave', 'On Leave'),
     ]
 
+    PUNCH_METHOD_CHOICES = [
+        ('normal', 'Normal'),    # standard check-in/check-out endpoint
+        ('face',   'Face'),      # face-recognition kiosk / auto-punch
+        ('manual', 'Manual'),    # admin manually marked
+    ]
+
     LATE_REQUEST_STATUS = [
         ('pending', 'Pending'),
         ('approved', 'Approved'),
@@ -40,6 +46,20 @@ class Attendance(models.Model):
     total_hours = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
     total_break_minutes = models.IntegerField(default=0, help_text='Total break duration in minutes for this day.')
     notes = models.TextField(blank=True, null=True)
+
+    # How the employee punched in / out
+    check_in_method = models.CharField(
+        max_length=10,
+        choices=PUNCH_METHOD_CHOICES,
+        null=True, blank=True,
+        help_text="How the employee punched in: 'normal', 'face', or 'manual'.",
+    )
+    check_out_method = models.CharField(
+        max_length=10,
+        choices=PUNCH_METHOD_CHOICES,
+        null=True, blank=True,
+        help_text="How the employee punched out: 'normal', 'face', or 'manual'.",
+    )
 
     check_in_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     check_in_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)

@@ -1091,12 +1091,14 @@ class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
         _hol_bk = _get_holiday_breakdown(year, month, admin)
         _total_days = max(1, _cal_days - _hol_bk['sunday_count'])
 
-        # Fetch all employees for this tenant
+        # Fetch all active employees for this tenant (exclude offboarded/inactive)
+        _OFFBOARDED = {'terminated', 'resigned', 'retired', 'offboarded', 'inactive'}
         emp_qs = Employee.objects.all()
         if user.role != 'SUPER_ADMIN':
             if admin is None:
                 return Response([], status=status.HTTP_200_OK)
             emp_qs = emp_qs.filter(admin_owner=admin)
+        emp_qs = emp_qs.exclude(status__in=_OFFBOARDED)
 
         violations = []
 
@@ -1195,12 +1197,14 @@ class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
             status__in=['approved', 'waived'],
         ).select_related('user').order_by('date')
 
-        # Build a map: auth_user_id → employee record
+        # Build a map: auth_user_id → employee record (active employees only)
+        _OFFBOARDED = {'terminated', 'resigned', 'retired', 'offboarded', 'inactive'}
         emp_qs = Employee.objects.all()
         if user.role != 'SUPER_ADMIN':
             if admin is None:
                 return Response([], status=status.HTTP_200_OK)
             emp_qs = emp_qs.filter(admin_owner=admin)
+        emp_qs = emp_qs.exclude(status__in=_OFFBOARDED)
 
         emp_by_email = {emp.email.lower(): emp for emp in emp_qs.select_related('department')}
 

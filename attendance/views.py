@@ -308,6 +308,8 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 'status': att_status,
                 'check_in_time': check_in_dt,
                 'check_out_time': check_out_dt,
+                'check_in_method': 'manual' if check_in_dt else None,
+                'check_out_method': 'manual' if check_out_dt else None,
                 'notes': notes,
                 'is_verified': True,
                 'verified_by': admin,
@@ -322,11 +324,14 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             attendance.notes = notes
             if check_in_dt is not None:
                 attendance.check_in_time = check_in_dt
+                attendance.check_in_method = 'manual'
             if check_out_dt is not None:
                 attendance.check_out_time = check_out_dt
+                attendance.check_out_method = 'manual'
             attendance.save(update_fields=[
                 'status', 'is_verified', 'verified_by', 'verified_at',
-                'notes', 'check_in_time', 'check_out_time', 'updated_at'
+                'notes', 'check_in_time', 'check_out_time',
+                'check_in_method', 'check_out_method', 'updated_at'
             ])
 
         if attendance.check_in_time and attendance.check_out_time:
@@ -373,6 +378,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             admin_owner=admin_owner,
             defaults={
                 'check_in_time': current_time,
+                'check_in_method': 'normal',
                 'notes': serializer.validated_data.get('notes', ''),
                 'check_in_latitude': latitude,
                 'check_in_longitude': longitude,
@@ -383,6 +389,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         if not created:
             if not attendance.check_in_time:
                 attendance.check_in_time = current_time
+                attendance.check_in_method = 'normal'
                 attendance.notes = serializer.validated_data.get('notes', '')
                 attendance.check_in_latitude = latitude
                 attendance.check_in_longitude = longitude
@@ -457,6 +464,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Already checked out today'}, status=status.HTTP_400_BAD_REQUEST)
 
         attendance.check_out_time = current_time
+        attendance.check_out_method = 'normal'
         attendance.check_out_latitude = latitude
         attendance.check_out_longitude = longitude
         attendance.check_out_address = address
@@ -2398,6 +2406,7 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
                     date=today,
                     admin_owner=admin_owner,
                     check_in_time=current_time,
+                    check_in_method='face',
                     notes=notes or '',
                     check_in_latitude=lat_val,
                     check_in_longitude=lon_val,
@@ -2425,6 +2434,7 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 attendance.check_in_time      = current_time
+                attendance.check_in_method    = 'face'
                 attendance.check_in_latitude  = lat_val
                 attendance.check_in_longitude = lon_val
                 attendance.check_in_address   = address or ''
@@ -2432,7 +2442,8 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
                     attendance.notes = notes
                 # determine_status() will set 'half_day' (no checkout yet)
                 attendance.save(update_fields=[
-                    'check_in_time', 'check_in_latitude', 'check_in_longitude',
+                    'check_in_time', 'check_in_method',
+                    'check_in_latitude', 'check_in_longitude',
                     'check_in_address', 'notes', 'status', 'updated_at',
                 ])
                 punch_result = 'checked_in'
@@ -2449,6 +2460,7 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 attendance.check_out_time      = current_time
+                attendance.check_out_method    = 'face'
                 attendance.check_out_latitude  = lat_val
                 attendance.check_out_longitude = lon_val
                 attendance.check_out_address   = address or ''
@@ -2457,7 +2469,8 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
                 attendance.calculate_hours()
                 # determine_status() will set 'present' (both times exist)
                 attendance.save(update_fields=[
-                    'check_out_time', 'check_out_latitude', 'check_out_longitude',
+                    'check_out_time', 'check_out_method',
+                    'check_out_latitude', 'check_out_longitude',
                     'check_out_address', 'notes', 'status', 'total_hours', 'updated_at',
                 ])
                 punch_result = 'checked_out'
@@ -2733,6 +2746,7 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
                     date=today,
                     admin_owner=admin_owner,
                     check_in_time=current_time,
+                    check_in_method='face',
                     notes=notes or '',
                     check_in_latitude=lat_val,
                     check_in_longitude=lon_val,
@@ -2759,13 +2773,15 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 attendance.check_in_time      = current_time
+                attendance.check_in_method    = 'face'
                 attendance.check_in_latitude  = lat_val
                 attendance.check_in_longitude = lon_val
                 attendance.check_in_address   = address or ''
                 if notes:
                     attendance.notes = notes
                 attendance.save(update_fields=[
-                    'check_in_time', 'check_in_latitude', 'check_in_longitude',
+                    'check_in_time', 'check_in_method',
+                    'check_in_latitude', 'check_in_longitude',
                     'check_in_address', 'notes', 'status', 'updated_at',
                 ])
                 punch_result = 'checked_in'
@@ -2782,6 +2798,7 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 attendance.check_out_time      = current_time
+                attendance.check_out_method    = 'face'
                 attendance.check_out_latitude  = lat_val
                 attendance.check_out_longitude = lon_val
                 attendance.check_out_address   = address or ''
@@ -2791,7 +2808,8 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
                 attendance.calculate_hours()
                 attendance.status = 'present'
                 attendance.save(update_fields=[
-                    'check_out_time', 'check_out_latitude', 'check_out_longitude',
+                    'check_out_time', 'check_out_method',
+                    'check_out_latitude', 'check_out_longitude',
                     'check_out_address', 'notes', 'status', 'total_hours', 'updated_at',
                 ])
                 punch_result = 'checked_out'
@@ -3112,6 +3130,7 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
             admin_owner=admin_owner,
             defaults={
                 'check_in_time': current_time,
+                'check_in_method': 'face',
                 'notes': serializer.validated_data.get('notes', ''),
                 'check_in_latitude': serializer.validated_data.get('latitude'),
                 'check_in_longitude': serializer.validated_data.get('longitude'),
@@ -3122,6 +3141,7 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
         if not created:
             if not attendance.check_in_time:
                 attendance.check_in_time = current_time
+                attendance.check_in_method = 'face'
                 attendance.notes = serializer.validated_data.get('notes', '')
                 attendance.check_in_latitude = serializer.validated_data.get('latitude')
                 attendance.check_in_longitude = serializer.validated_data.get('longitude')
@@ -3189,6 +3209,7 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
             return Response({'error': 'Already checked out today'}, status=status.HTTP_400_BAD_REQUEST)
 
         attendance.check_out_time = current_time
+        attendance.check_out_method = 'face'
         attendance.check_out_latitude = serializer.validated_data.get('latitude')
         attendance.check_out_longitude = serializer.validated_data.get('longitude')
         attendance.check_out_address = serializer.validated_data.get('address', '')
