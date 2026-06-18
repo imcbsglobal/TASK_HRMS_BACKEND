@@ -445,6 +445,19 @@ class SalaryIncrementHistoryView(APIView):
                 created_by=request.user,
             )
 
+        log_activity(
+            user=request.user,
+            action_type='CREATE',
+            module='Salary Increment',
+            description=(
+                f"Added salary increment for {employee.first_name} {employee.last_name} "
+                f"(ID: {employee.employee_id}): ₹{old_salary} → ₹{new_salary} "
+                f"({'+' if increment_percentage >= 0 else ''}{increment_percentage}%) "
+                f"effective {increment_date_obj}"
+            ),
+            request=request,
+        )
+
         return Response(
             SalaryIncrementHistorySerializer(log).data,
             status=status.HTTP_201_CREATED,
@@ -519,6 +532,17 @@ class SalaryIncrementHistoryDetailView(APIView):
                     setattr(log, field, request.data[field] or None if field in ('next_increment_date',) else request.data[field])
 
         log.save()
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Salary Increment',
+            description=(
+                f"Updated increment record for {employee.first_name} {employee.last_name} "
+                f"(ID: {employee.employee_id}): new salary ₹{log.new_salary}, "
+                f"effective {log.increment_date}"
+            ),
+            request=request,
+        )
         return Response(SalaryIncrementHistorySerializer(log).data)
 
     def delete(self, request, pk, log_id):
@@ -536,7 +560,17 @@ class SalaryIncrementHistoryDetailView(APIView):
         if err:
             return err
 
+        emp_name = f"{employee.first_name} {employee.last_name}"
+        emp_id = employee.employee_id
+        salary_info = f"₹{log.new_salary} effective {log.increment_date}"
         log.delete()
+        log_activity(
+            user=request.user,
+            action_type='DELETE',
+            module='Salary Increment',
+            description=f"Deleted increment record for {emp_name} (ID: {emp_id}): {salary_info}",
+            request=request,
+        )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -798,6 +832,14 @@ class EmployeeAssetListCreateView(APIView):
         serializer = EmployeeAssetSerializer(data=data)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        asset = serializer.instance
+        log_activity(
+            user=request.user,
+            action_type='CREATE',
+            module='Employee',
+            description=f"Added asset '{asset.asset_name}' for {employee.first_name} {employee.last_name} (ID: {employee.employee_id})",
+            request=request,
+        )
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -828,13 +870,30 @@ class EmployeeAssetDetailView(APIView):
         serializer = EmployeeAssetSerializer(asset, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Employee',
+            description=f"Updated asset '{asset.asset_name}' for {asset.employee.first_name} {asset.employee.last_name} (ID: {asset.employee.employee_id})",
+            request=request,
+        )
         return Response(serializer.data)
 
     def delete(self, request, employee_id, pk):
         asset, err = self._get_asset(request, employee_id, pk)
         if err:
             return err
+        asset_name = asset.asset_name
+        emp_name = f"{asset.employee.first_name} {asset.employee.last_name}"
+        emp_id = asset.employee.employee_id
         asset.delete()
+        log_activity(
+            user=request.user,
+            action_type='DELETE',
+            module='Employee',
+            description=f"Removed asset '{asset_name}' from {emp_name} (ID: {emp_id})",
+            request=request,
+        )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -936,6 +995,14 @@ class EmployeeDocumentListCreateView(APIView):
         serializer = EmployeeDocumentSerializer(data=data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        doc = serializer.instance
+        log_activity(
+            user=request.user,
+            action_type='CREATE',
+            module='Employee',
+            description=f"Uploaded document '{doc.title}' for {employee.first_name} {employee.last_name} (ID: {employee.employee_id})",
+            request=request,
+        )
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -971,6 +1038,13 @@ class EmployeeDocumentDetailView(APIView):
         serializer = EmployeeDocumentSerializer(doc, data=request.data, partial=True, context={'request': request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Employee',
+            description=f"Updated document '{doc.title}' for {doc.employee.first_name} {doc.employee.last_name} (ID: {doc.employee.employee_id})",
+            request=request,
+        )
         return Response(serializer.data)
 
     def delete(self, request, employee_id, pk):
@@ -982,5 +1056,15 @@ class EmployeeDocumentDetailView(APIView):
         doc, err = self._get_document(request, employee_id, pk)
         if err:
             return err
+        doc_name = doc.title
+        emp_name = f"{doc.employee.first_name} {doc.employee.last_name}"
+        emp_id = doc.employee.employee_id
         doc.delete()
+        log_activity(
+            user=request.user,
+            action_type='DELETE',
+            module='Employee',
+            description=f"Deleted document '{doc_name}' for {emp_name} (ID: {emp_id})",
+            request=request,
+        )
         return Response(status=status.HTTP_204_NO_CONTENT)

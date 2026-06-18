@@ -12,6 +12,7 @@ from login.models import CompanySettings
 from .models import ExperienceCertificate
 from .pdf import generate_experience_certificate_pdf
 from .serializers import ExperienceCertificateSerializer
+from activitylog.utils import log_activity
 
 
 def _get_admin_owner(user):
@@ -118,6 +119,13 @@ class ExperienceCertificateListCreateView(APIView):
             employment_type=validated.get('employment_type') or employee.employment_type,
             start_date=validated.get('start_date') or employee.date_of_joining,
         )
+        log_activity(
+            user=request.user,
+            action_type='CREATE',
+            module='Experience Certificate',
+            description=f"Created experience certificate {certificate.certificate_number} for {certificate.employee_name}",
+            request=request,
+        )
         return Response(
             ExperienceCertificateSerializer(certificate, context={'request': request}).data,
             status=status.HTTP_201_CREATED,
@@ -166,6 +174,13 @@ class ExperienceCertificateDetailView(APIView):
         )
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Experience Certificate',
+            description=f"Updated experience certificate {certificate.certificate_number} for {certificate.employee_name}",
+            request=request,
+        )
         return Response(serializer.data)
 
     def delete(self, request, pk):
@@ -178,7 +193,16 @@ class ExperienceCertificateDetailView(APIView):
         certificate, error = self._get_certificate(request, pk)
         if error:
             return error
+        cert_number = certificate.certificate_number
+        cert_employee = certificate.employee_name
         certificate.delete()
+        log_activity(
+            user=request.user,
+            action_type='DELETE',
+            module='Experience Certificate',
+            description=f"Deleted experience certificate {cert_number} for {cert_employee}",
+            request=request,
+        )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -211,6 +235,13 @@ class ExperienceCertificateIssueView(APIView):
                 )
         certificate.save(update_fields=['status', 'issued_by', 'issued_at', 'issue_date', 'updated_at'])
 
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Experience Certificate',
+            description=f"Issued experience certificate {certificate.certificate_number} for {certificate.employee_name}",
+            request=request,
+        )
         return Response(ExperienceCertificateSerializer(certificate, context={'request': request}).data)
 
 
@@ -231,6 +262,13 @@ class ExperienceCertificateRevokeView(APIView):
 
         certificate.status = 'revoked'
         certificate.save(update_fields=['status', 'updated_at'])
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Experience Certificate',
+            description=f"Revoked experience certificate {certificate.certificate_number} for {certificate.employee_name}",
+            request=request,
+        )
         return Response(ExperienceCertificateSerializer(certificate, context={'request': request}).data)
 
 
@@ -261,5 +299,12 @@ class ExperienceCertificateDownloadView(APIView):
         response = HttpResponse(pdf_bytes, content_type='application/pdf')
         response['Content-Disposition'] = (
             f'attachment; filename="Experience_Certificate_{filename_name}.pdf"'
+        )
+        log_activity(
+            user=request.user,
+            action_type='OTHER',
+            module='Experience Certificate',
+            description=f"Downloaded experience certificate {certificate.certificate_number} for {certificate.employee_name}",
+            request=request,
         )
         return response

@@ -1029,6 +1029,14 @@ class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
         payroll.processed_by = request.user
         payroll.processed_at = timezone.now()
         payroll.save()
+        month_name = dict(Payroll.MONTH_CHOICES).get(payroll.month, str(payroll.month))
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Payroll',
+            description=f"Processed payroll for {payroll.employee.first_name} {payroll.employee.last_name} ({month_name} {payroll.year})",
+            request=request,
+        )
         return Response(PayrollDetailSerializer(payroll).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='mark-paid')
@@ -1040,6 +1048,14 @@ class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
         payroll.payment_date      = request.data.get('payment_date') or payroll.payment_date
         payroll.payment_reference = request.data.get('payment_reference', '')
         payroll.save()
+        month_name = dict(Payroll.MONTH_CHOICES).get(payroll.month, str(payroll.month))
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Payroll',
+            description=f"Marked payroll as paid for {payroll.employee.first_name} {payroll.employee.last_name} ({month_name} {payroll.year}); ref: {payroll.payment_reference or 'N/A'}",
+            request=request,
+        )
         return Response(PayrollDetailSerializer(payroll).data, status=status.HTTP_200_OK)
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1414,6 +1430,14 @@ class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
             admin_owner=admin,
         )
 
+        log_activity(
+            user=request.user,
+            action_type='CREATE',
+            module='Payroll',
+            description=f"Applied policy deduction of ₹{deduction_amount} for {employee.first_name} {employee.last_name} ({month_name} {year}): {description}",
+            request=request,
+        )
+
         return Response({
             'id':             deduction.id,
             'employee_id':    employee.id,
@@ -1506,6 +1530,14 @@ class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
             description=description,
             is_active=False,
             admin_owner=admin,
+        )
+
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='Payroll',
+            description=f"Waived policy deduction for {employee.first_name} {employee.last_name} ({month_name} {year}): {description}",
+            request=request,
         )
 
         return Response({
