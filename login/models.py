@@ -73,6 +73,11 @@ class User(AbstractBaseUser, PermissionsMixin):
     # Company name fetched from the license server at admin creation time
     company_name = models.CharField(max_length=255, blank=True, default='')
 
+    # ── Mobile push notification token (FCM) ─────────────────────────────────
+    # Stored when the mobile app registers after login.
+    # One token per user; overwritten on each new device login.
+    fcm_token = models.TextField(blank=True, default='')
+
     # ── Tenant isolation ──────────────────────────────────────────────────────
     # Every USER belongs to the ADMIN who created them.
     # ADMIN and SUPER_ADMIN rows have this NULL.

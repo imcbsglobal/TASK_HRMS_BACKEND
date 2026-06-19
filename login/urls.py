@@ -11,7 +11,8 @@ from .views import (
     CompanySettingsCurrentView,
     CorporateClientListView,
     SwitchClientView,
-    ChangePasswordView
+    ChangePasswordView,
+    FCMTokenView,
 )
 from rest_framework_simplejwt.views import TokenRefreshView
 
@@ -38,4 +39,7 @@ urlpatterns = [
     path('corporate-clients/',          CorporateClientListView.as_view(),   name='corporate_clients'),
     path('switch-client/',              SwitchClientView.as_view(),          name='switch_client'),
     path('change-password/',            ChangePasswordView.as_view(),        name='change_password'),
+
+    # 📱 Mobile push notifications
+    path('fcm-token/',                  FCMTokenView.as_view(),              name='fcm_token'),
 ]

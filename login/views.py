@@ -841,3 +841,39 @@ class ChangePasswordView(APIView):
             {"detail": "Password changed successfully."},
             status=status.HTTP_200_OK,
         )
+
+
+# ---------------------------------------------------------------------------
+# FCM Token – POST /api/fcm-token/
+#
+# Mobile app calls this after login to register its push notification token.
+# The token is stored on the authenticated user's record.
+# Calling it again with a new token simply overwrites the old one.
+# ---------------------------------------------------------------------------
+class FCMTokenView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        token = request.data.get('fcm_token', '').strip()
+        if not token:
+            return Response(
+                {"detail": "fcm_token is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        request.user.fcm_token = token
+        request.user.save(update_fields=['fcm_token'])
+
+        return Response(
+            {"detail": "FCM token registered successfully."},
+            status=status.HTTP_200_OK,
+        )
+
+    def delete(self, request):
+        """Clear the FCM token (call on logout from mobile app)."""
+        request.user.fcm_token = ''
+        request.user.save(update_fields=['fcm_token'])
+        return Response(
+            {"detail": "FCM token cleared."},
+            status=status.HTTP_200_OK,
+        )
