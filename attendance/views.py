@@ -1159,7 +1159,18 @@ class LateArrivalRequestViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
-        if instance.user != request.user and not _is_admin(request.user):
+        if _is_admin(request.user):
+            # Admin: hard-delete any request regardless of status
+            instance.delete()
+            log_activity(
+                user=request.user,
+                action_type='DELETE',
+                module='Attendance',
+                description=f"Admin deleted late arrival request for {instance.date}",
+                request=request,
+            )
+            return Response({'message': 'Late arrival request deleted.'}, status=status.HTTP_200_OK)
+        if instance.user != request.user:
             return Response({'error': 'You cannot cancel this request.'}, status=status.HTTP_403_FORBIDDEN)
         if instance.status != 'pending':
             return Response({'error': 'Only pending requests can be cancelled.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1427,7 +1438,18 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
-        if instance.user != request.user and not _is_admin(request.user):
+        if _is_admin(request.user):
+            # Admin: hard-delete any request regardless of status
+            instance.delete()
+            log_activity(
+                user=request.user,
+                action_type='DELETE',
+                module='Attendance',
+                description=f"Admin deleted leave request from {instance.start_date} to {instance.end_date}",
+                request=request,
+            )
+            return Response({'message': 'Leave request deleted.'}, status=status.HTTP_200_OK)
+        if instance.user != request.user:
             return Response({'error': 'You cannot cancel this leave request.'}, status=status.HTTP_403_FORBIDDEN)
         if instance.status != 'pending':
             return Response({'error': 'Only pending leave requests can be cancelled.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1888,7 +1910,18 @@ class EarlyDepartureRequestViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
-        if instance.user != request.user and not _is_admin(request.user):
+        if _is_admin(request.user):
+            # Admin: hard-delete any request regardless of status
+            instance.delete()
+            log_activity(
+                user=request.user,
+                action_type='DELETE',
+                module='Attendance',
+                description=f"Admin deleted early departure request for {instance.date}",
+                request=request,
+            )
+            return Response({'message': 'Early departure request deleted.'}, status=status.HTTP_200_OK)
+        if instance.user != request.user:
             return Response({'error': 'You cannot cancel this request.'}, status=status.HTTP_403_FORBIDDEN)
         if instance.status != 'pending':
             return Response({'error': 'Only pending requests can be cancelled.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -3300,6 +3333,17 @@ class SalaryAdvanceRequestViewSet(viewsets.ModelViewSet):
  
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
+        if _is_admin(request.user):
+            # Admin: hard-delete any request regardless of status
+            instance.delete()
+            log_activity(
+                user=request.user,
+                action_type='DELETE',
+                module='Attendance',
+                description=f"Admin deleted salary advance request for amount {instance.amount}",
+                request=request,
+            )
+            return Response({'message': 'Salary advance request deleted.'}, status=status.HTTP_200_OK)
         if instance.user != request.user:
             return Response(
                 {'error': 'You can only cancel your own requests.'},
@@ -3527,7 +3571,18 @@ class WFHRequestViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
-        if instance.user != request.user and not _is_admin(request.user):
+        if _is_admin(request.user):
+            # Admin: hard-delete any request regardless of status
+            instance.delete()
+            log_activity(
+                user=request.user,
+                action_type='DELETE',
+                module='Attendance',
+                description=f"Admin deleted WFH request for {instance.date}",
+                request=request,
+            )
+            return Response({'message': 'WFH request deleted.'}, status=status.HTTP_200_OK)
+        if instance.user != request.user:
             return Response(
                 {'error': 'You cannot cancel this request.'},
                 status=status.HTTP_403_FORBIDDEN
