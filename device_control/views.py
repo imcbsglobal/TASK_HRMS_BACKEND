@@ -187,12 +187,12 @@ class DeviceDeleteView(APIView):
     logged-in admin's client_id.
 
     The external API for deregistration is:
-      POST https://activate.imcbs.com/mobileapp/api/project/trellisco/login/
-    with body: { "client_id": "...", "device_id": "..." }
-    and expects a logout/deregister payload.
+      POST https://activate.imcbs.com/mobileapp/api/project/trellisco/logout/
+    with body: { "license_key": "...", "device_id": "..." }
 
-    If the external API doesn't support single-device deletion, this view
-    returns 200 with a message so the frontend can optimistically remove it.
+    The license server's response is treated as the source of truth — a non-2xx
+    response, or a 200 with an explicit error/success=false in the body, is
+    surfaced back to the caller as a real error (not swallowed/optimistic).
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -239,31 +239,78 @@ class DeviceDeleteView(APIView):
             )
 
         device_name = device.get('device_name', device_id)
+        license_key = customer.get('license_key')
 
-        # Attempt to call the external deregister endpoint
-        # The external system exposes:
-        #   POST /mobileapp/api/project/<endpoint>/logout/
-        # with body: { "client_id": "...", "device_id": "..." }
-        deregister_url = f"https://activate.imcbs.com/mobileapp/api/project/trellisco/logout/"
+        if not license_key:
+            return Response(
+                {"detail": "No license key found for this client; cannot deregister device."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Call the external deregister endpoint.
+        # POST https://activate.imcbs.com/mobileapp/api/project/trellisco/logout/
+        # Body: { "license_key": "...", "device_id": "..." }
+        deregister_url = "https://activate.imcbs.com/mobileapp/api/project/trellisco/logout/"
         try:
             ext_resp = http_requests.post(
                 deregister_url,
-                json={"client_id": target_client_id, "device_id": device_id},
+                json={"license_key": license_key, "device_id": device_id},
                 timeout=API_TIMEOUT,
             )
-            # Accept any 2xx as success; also accept 404 (already removed)
-            if ext_resp.status_code not in (200, 201, 204, 404):
-                logger.warning(
-                    "device_control: Deregister returned %s for device %s: %s",
-                    ext_resp.status_code, device_id, ext_resp.text[:200],
-                )
-                # Don't block the admin — log and treat as success (optimistic)
-        except Exception as exc:
+        except http_requests.exceptions.Timeout:
             logger.warning(
-                "device_control: Deregister call failed for device %s: %s",
-                device_id, exc,
+                "device_control: Deregister timed out for device %s.", device_id
             )
-            # Fail open — the external system may not support this; proceed
+            return Response(
+                {"detail": "License server timed out while deregistering the device. Please try again."},
+                status=status.HTTP_504_GATEWAY_TIMEOUT,
+            )
+        except http_requests.exceptions.RequestException as exc:
+            logger.error(
+                "device_control: Deregister call failed for device %s: %s", device_id, exc
+            )
+            return Response(
+                {"detail": f"Could not reach license server to deregister device: {exc}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        # Try to parse the external API's response body, regardless of status,
+        # so we can surface a meaningful message either way.
+        try:
+            ext_body = ext_resp.json()
+        except ValueError:
+            ext_body = {}
+
+        if not ext_resp.ok:
+            ext_message = (
+                ext_body.get('detail')
+                or ext_body.get('message')
+                or ext_body.get('error')
+                or ext_resp.text[:200]
+                or "Unknown error from license server."
+            )
+            logger.warning(
+                "device_control: Deregister rejected for device %s (status %s): %s",
+                device_id, ext_resp.status_code, ext_message,
+            )
+            return Response(
+                {"detail": f"Failed to deregister device: {ext_message}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        # Some APIs return 200 with an embedded error/success flag in the body.
+        if isinstance(ext_body, dict) and (
+            ext_body.get('success') is False or ext_body.get('error')
+        ):
+            ext_message = ext_body.get('message') or ext_body.get('error') or "Deregistration failed."
+            logger.warning(
+                "device_control: Deregister returned success=False for device %s: %s",
+                device_id, ext_message,
+            )
+            return Response(
+                {"detail": f"Failed to deregister device: {ext_message}"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
 
         log_activity(
             user=request.user,
