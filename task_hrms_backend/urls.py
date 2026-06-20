@@ -32,6 +32,7 @@ urlpatterns = [
     path('api/whatsapp/', include('watsapp_config.urls')),
     path("api/experience-certificates/", include("experience_certificate.urls")),
     path("api/activitylog/", include("activitylog.urls")),
+    path("api/device-control/", include("device_control.urls")),
     path("api/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
 ]
 

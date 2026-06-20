@@ -71,6 +71,7 @@ INSTALLED_APPS = [
     'experience_certificate',
     'activitylog',
     'storages',
+    'device_control',
 ]
 
 MIDDLEWARE = [
