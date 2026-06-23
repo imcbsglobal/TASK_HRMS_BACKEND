@@ -371,7 +371,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         # ─────────────────────────────────────────────────────────────────────
 
         # ── Geofence enforcement ──────────────────────────────────────────────
-        allowed, geo_error, _ = validate_geofence(user, latitude, longitude, settings_obj)
+        allowed, geo_error, _ = validate_geofence(user, latitude, longitude, settings_obj, today)
         if not allowed:
             return Response({'error': geo_error}, status=status.HTTP_403_FORBIDDEN)
         # ─────────────────────────────────────────────────────────────────────
@@ -454,7 +454,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         # ─────────────────────────────────────────────────────────────────────
 
         # ── Geofence enforcement ──────────────────────────────────────────────
-        allowed, geo_error, _ = validate_geofence(user, latitude, longitude, settings_obj)
+        allowed, geo_error, _ = validate_geofence(user, latitude, longitude, settings_obj, today)
         if not allowed:
             return Response({'error': geo_error}, status=status.HTTP_403_FORBIDDEN)
         # ─────────────────────────────────────────────────────────────────────
@@ -3168,7 +3168,7 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
         # Geofence enforcement runs first — no point hitting the DB for
         # serializer validation if the location is already blocked.
         settings_obj = _face_settings
-        allowed, geo_error, _ = validate_geofence(user, latitude, longitude, settings_obj)
+        allowed, geo_error, _ = validate_geofence(user, latitude, longitude, settings_obj, today)
         if not allowed:
             return Response({'error': geo_error}, status=status.HTTP_403_FORBIDDEN)
 
@@ -3244,7 +3244,7 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
 
         # Geofence enforcement runs first
         settings_obj = _face_co_settings
-        allowed, geo_error, _ = validate_geofence(user, latitude, longitude, settings_obj)
+        allowed, geo_error, _ = validate_geofence(user, latitude, longitude, settings_obj, today)
         if not allowed:
             return Response({'error': geo_error}, status=status.HTTP_403_FORBIDDEN)
 

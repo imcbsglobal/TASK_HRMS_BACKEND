@@ -13,12 +13,15 @@ Usage inside your AttendanceViewSet:
         request.data.get('latitude'),
         request.data.get('longitude'),
         settings_obj,
+        today_date,  # optional, defaults to timezone.now().date()
     )
     if not allowed:
         return Response({'error': error_msg}, status=403)
 """
 
 import math
+from django.utils import timezone
+from .models import WFHRequest
 
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -32,7 +35,7 @@ def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def validate_geofence(user, latitude, longitude, settings_obj):
+def validate_geofence(user, latitude, longitude, settings_obj, check_date=None):
     """
     Validate whether the user is allowed to check in/out from their current location.
 
@@ -42,6 +45,7 @@ def validate_geofence(user, latitude, longitude, settings_obj):
     Rules
     -----
     OUT_OF_OFFICE users  → always allowed, no distance check.
+    Approved WFH for today → always allowed, no distance check.
     IN_OFFICE users      → must be within settings_obj.office_radius_meters of the
                            configured office coordinates.
                            If office coords are not configured, check is skipped
@@ -49,9 +53,19 @@ def validate_geofence(user, latitude, longitude, settings_obj):
                            sets the office location.
     """
     work_location = getattr(user, 'work_location', 'IN_OFFICE')
+    check_date = check_date or timezone.now().date()
 
     # ── OUT_OF_OFFICE: no restriction ────────────────────────────────────────
     if work_location == 'OUT_OF_OFFICE':
+        return True, None, None
+
+    # ── Approved WFH for today: no restriction ───────────────────────────────
+    has_approved_wfh = WFHRequest.objects.filter(
+        user=user,
+        date=check_date,
+        status='approved'
+    ).exists()
+    if has_approved_wfh:
         return True, None, None
 
     # ── IN_OFFICE: check office coords are configured ────────────────────────
