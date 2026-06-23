@@ -812,7 +812,8 @@ class SalaryAdvanceApprovalSerializer(serializers.Serializer):
         user = self.context['request'].user
         is_admin = (
             user.is_staff or user.is_superuser or
-            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin'] or
+            getattr(user, 'is_admin_user', False)
         )
         if not is_admin:
             raise serializers.ValidationError(
@@ -897,7 +898,8 @@ class WFHApprovalSerializer(serializers.Serializer):
         user = self.context['request'].user
         is_admin = (
             user.is_staff or user.is_superuser or
-            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin'] or
+            getattr(user, 'is_admin_user', False)
         )
         if not is_admin:
             raise serializers.ValidationError(
