@@ -88,7 +88,8 @@ from .serializers import (
 def _is_admin(user):
     return (
         user.is_staff or user.is_superuser or
-        getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+        getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin'] or
+        getattr(user, 'is_admin_user', False)
     )
 
 
@@ -126,11 +127,14 @@ def _is_working_day(date_obj, sunday_working=False):
 def _get_admin_owner(user):
     """
     Return the admin_owner for tenant-scoped writes.
-    - If the user is an admin themselves, they ARE the owner.
-    - If the user is a regular employee, their admin_owner is stored on their
-      profile as `user.admin_owner` (adjust the field name to match your User model).
+    - Only true tenant admins (role=ADMIN/SUPER_ADMIN, is_staff, or is_superuser)
+      are the tenant owner — they ARE the owner.
+    - is_admin_user accounts have role='USER' and belong to a real admin_owner,
+      so they must use their admin_owner field (not themselves).
+    - Regular employees also resolve through their admin_owner field.
     """
-    if _is_admin(user):
+    role = getattr(user, 'role', None)
+    if user.is_staff or user.is_superuser or role in ('ADMIN', 'SUPER_ADMIN', 'admin', 'super_admin'):
         return user
     return getattr(user, 'admin_owner', None)
 
@@ -713,7 +717,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='pending-late-requests')
     def pending_late_requests(self, request):
-        if not request.user.is_staff:
+        if not _is_admin(request.user):
             return Response({'error': 'Only admins can view pending late requests'}, status=status.HTTP_403_FORBIDDEN)
 
         admin_owner = _get_admin_owner(request.user)
@@ -796,8 +800,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='employees-with-attendance')
     def employees_with_attendance(self, request):
         """
-        Returns employees whose email matches a user that has at least one
-        attendance record within this tenant.  Admin only.
+        Returns all active employees for this tenant.  Admin only.
         """
         user = request.user
         if not _is_admin(user):
@@ -806,16 +809,10 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         from employee_management.models import Employee
 
         admin_owner = _get_admin_owner(user)
-        user_emails = (
-            Attendance.objects
-            .filter(admin_owner=admin_owner)
-            .values_list('user__email', flat=True)
-            .distinct()
-        )
 
         employees = Employee.objects.filter(
             admin_owner=admin_owner,
-            email__in=user_emails,
+            status__in=['active']
         ).select_related('department').order_by('first_name', 'last_name')
 
         data = [
@@ -827,6 +824,8 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 'email': emp.email,
                 'position': emp.position,
                 'department': emp.department.name if emp.department else '',
+                'duty_start_time': str(emp.duty_start_time) if emp.duty_start_time else None,
+                'duty_end_time': str(emp.duty_end_time) if emp.duty_end_time else None,
             }
             for emp in employees
         ]
@@ -1761,9 +1760,28 @@ class AttendanceSettingsViewSet(viewsets.ModelViewSet):
         return AttendanceSettings.objects.filter(admin_owner=admin_owner)
 
     def get_permissions(self):
-        if self.action in ['create', 'update', 'partial_update', 'destroy']:
-            return [permissions.IsAdminUser()]
+        # For all create/update/partial_update/destroy actions, check via _is_admin in the action itself
         return [permissions.IsAuthenticated()]
+
+    def create(self, request, *args, **kwargs):
+        if not _is_admin(request.user):
+            return Response({'error': 'Only admins can create attendance settings.'}, status=status.HTTP_403_FORBIDDEN)
+        return super().create(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        if not _is_admin(request.user):
+            return Response({'error': 'Only admins can update attendance settings.'}, status=status.HTTP_403_FORBIDDEN)
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        if not _is_admin(request.user):
+            return Response({'error': 'Only admins can update attendance settings.'}, status=status.HTTP_403_FORBIDDEN)
+        return super().partial_update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        if not _is_admin(request.user):
+            return Response({'error': 'Only admins can delete attendance settings.'}, status=status.HTTP_403_FORBIDDEN)
+        return super().destroy(request, *args, **kwargs)
 
     @action(detail=False, methods=['get', 'post'], url_path='current')
     def current_settings(self, request):

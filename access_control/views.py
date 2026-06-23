@@ -23,24 +23,24 @@ def _get_admin_owner(user):
     """
     Return the ADMIN who owns the current request's tenant scope.
     """
-    if getattr(user, 'role', None) == 'ADMIN':
-        return user
+    if getattr(user, 'role', None) == 'ADMIN' or getattr(user, 'is_admin_user', False):
+        return user if user.role == 'ADMIN' else user.admin_owner
     if getattr(user, 'role', None) == 'USER' and hasattr(user, 'admin_owner'):
         return user.admin_owner
     return None
 
 class IsAdminOrSuperAdmin(permissions.BasePermission):
     """
-    Custom permission to only allow admin or super_admin users
-    FIXED: Now properly checks both User.role and UserRole.role
+    Custom permission to only allow admin, super_admin, or admin_user users
     """
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
             return False
         
-        # Check User model role field (SUPER_ADMIN, ADMIN, USER)
+        # Check User model role field (SUPER_ADMIN, ADMIN, USER) or is_admin_user
         user_role_value = getattr(request.user, 'role', None)
-        if user_role_value and user_role_value in ['SUPER_ADMIN', 'ADMIN']:
+        is_admin_user = getattr(request.user, 'is_admin_user', False)
+        if (user_role_value and user_role_value in ['SUPER_ADMIN', 'ADMIN']) or is_admin_user:
             return True
         
         # Also check UserRole model if it exists
@@ -92,8 +92,9 @@ class MenuViewSet(viewsets.ModelViewSet):
         
         user_role_value = getattr(user, 'role', None)
         is_admin = user_role_value in ['SUPER_ADMIN', 'ADMIN']
+        is_admin_user = getattr(user, 'is_admin_user', False)
 
-        if not is_admin:
+        if not is_admin and not is_admin_user:
             try:
                 user_role = user.user_role
                 is_admin = user_role.role in ['admin', 'super_admin']
@@ -101,7 +102,7 @@ class MenuViewSet(viewsets.ModelViewSet):
                 pass
 
         qs = self.get_queryset().filter(parent__isnull=True, is_active=True)
-        if is_admin:
+        if is_admin or is_admin_user:
             parent_menus = qs
         else:
             accessible_menu_ids = user.menu_access.filter(can_view=True).values_list('menu_id', flat=True)

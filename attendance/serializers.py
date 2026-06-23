@@ -241,7 +241,7 @@ class LateApprovalSerializer(serializers.Serializer):
     action = serializers.ChoiceField(choices=['approve', 'reject'])
 
     def validate(self, data):
-        if not self.context['request'].user.is_staff:
+        if not self.context['request'].user.is_staff and not getattr(self.context['request'].user, 'is_admin_user', False):
             raise serializers.ValidationError("Only admins can approve/reject late requests.")
         return data
 
@@ -255,7 +255,7 @@ class VerifyAttendanceSerializer(serializers.Serializer):
         user = self.context['request'].user
         if not (user.is_staff or user.is_superuser):
             role = getattr(user, 'role', None)
-            if role not in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']:
+            if role not in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin'] and not getattr(user, 'is_admin_user', False):
                 raise serializers.ValidationError("Only admins can verify attendance records.")
         return data
 
@@ -363,7 +363,8 @@ class LateArrivalApprovalSerializer(serializers.Serializer):
         user = self.context['request'].user
         is_admin = (
             user.is_staff or user.is_superuser or
-            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin'] or
+            getattr(user, 'is_admin_user', False)
         )
         if not is_admin:
             raise serializers.ValidationError(
@@ -496,7 +497,8 @@ class LeaveApprovalSerializer(serializers.Serializer):
         user = self.context['request'].user
         is_admin = (
             user.is_staff or user.is_superuser or
-            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin'] or
+            getattr(user, 'is_admin_user', False)
         )
         if not is_admin:
             raise serializers.ValidationError("Only admins can approve/reject leave requests.")
@@ -682,7 +684,8 @@ class EarlyDepartureApprovalSerializer(serializers.Serializer):
         user = self.context['request'].user
         is_admin = (
             user.is_staff or user.is_superuser or
-            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+            getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin'] or
+            getattr(user, 'is_admin_user', False)
         )
         if not is_admin:
             raise serializers.ValidationError(

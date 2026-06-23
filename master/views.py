@@ -19,12 +19,18 @@ from .serializers import (
 from activitylog.utils import ActivityLogMixin, log_activity
 
 
+def _is_admin(user):
+    return (
+        user.role in ('SUPER_ADMIN', 'ADMIN') or
+        getattr(user, 'is_admin_user', False)
+    )
+
 def _get_admin_owner(user):
     """
     Return the ADMIN who owns the current request's tenant scope.
     """
-    if user.role == 'ADMIN':
-        return user
+    if user.role == 'ADMIN' or getattr(user, 'is_admin_user', False):
+        return user if user.role == 'ADMIN' else user.admin_owner
     if user.role == 'USER':
         return user.admin_owner
     return None  # SUPER_ADMIN

@@ -169,12 +169,13 @@ class LoginView(APIView):
         )
 
         return Response({
-            "access":    str(refresh.access_token),
-            "refresh":   str(refresh),
-            "role":      normalized_role,
-            "username":  user.username,
-            "client_id": user.client_id if user.role == 'ADMIN' else client_id,
+            "access":        str(refresh.access_token),
+            "refresh":       str(refresh),
+            "role":          normalized_role,
+            "username":      user.username,
+            "client_id":     user.client_id if user.role == 'ADMIN' else client_id,
             "company_setup_completed": setup_completed,
+            "is_admin_user": user.is_admin_user,
         })
 
 
@@ -227,11 +228,11 @@ class UserListView(APIView):
         if request.user.role == 'SUPER_ADMIN':
             # Super admin sees only the admins they created
             users = User.objects.filter(role='ADMIN').order_by('id')
-        elif request.user.role == 'ADMIN':
-            # Admin sees only the users they own
+        elif request.user.role == 'ADMIN' or request.user.is_admin_user:
+            # Admin or admin user sees all users (including other admin users) they own
+            admin_owner = request.user if request.user.role == 'ADMIN' else request.user.admin_owner
             users = User.objects.filter(
-                role='USER',
-                admin_owner=request.user
+                admin_owner=admin_owner
             ).order_by('id')
         else:
             return Response(
@@ -254,6 +255,7 @@ class UserCreateView(APIView):
 
     def post(self, request):
         requesting_role = request.user.role
+        is_admin_user = request.user.is_admin_user
         target_role     = request.data.get('role', 'USER')
 
         if requesting_role == 'SUPER_ADMIN':
@@ -262,10 +264,10 @@ class UserCreateView(APIView):
                     {"detail": "Super Admins can only create Admin accounts."},
                     status=status.HTTP_403_FORBIDDEN,
                 )
-        elif requesting_role == 'ADMIN':
+        elif requesting_role == 'ADMIN' or is_admin_user:
             if target_role != 'USER':
                 return Response(
-                    {"detail": "Admins can only create User accounts."},
+                    {"detail": "Admins and Admin Users can only create User accounts."},
                     status=status.HTTP_403_FORBIDDEN,
                 )
         else:
@@ -276,9 +278,10 @@ class UserCreateView(APIView):
 
         data = request.data.copy()
 
-        # Automatically assign admin_owner when an ADMIN creates a USER
-        if requesting_role == 'ADMIN':
-            data['admin_owner'] = request.user.id
+        # Automatically assign admin_owner when an ADMIN or ADMIN USER creates a USER
+        if requesting_role == 'ADMIN' or is_admin_user:
+            admin_owner = request.user if requesting_role == 'ADMIN' else request.user.admin_owner
+            data['admin_owner'] = admin_owner.id
 
         serializer = UserCreateSerializer(data=data)
         if serializer.is_valid():
@@ -313,9 +316,10 @@ class UserUpdateView(APIView):
         except User.DoesNotExist:
             return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Permission check: ADMIN can only edit their own users
-        if request.user.role == 'ADMIN':
-            if user.admin_owner_id != request.user.id:
+        # Permission check: ADMIN or ADMIN USER can only edit their own users
+        if request.user.role == 'ADMIN' or request.user.is_admin_user:
+            admin_owner = request.user if request.user.role == 'ADMIN' else request.user.admin_owner
+            if user.admin_owner_id != admin_owner.id:
                 return Response(
                     {"detail": "You do not have permission to edit this user."},
                     status=status.HTTP_403_FORBIDDEN,
@@ -400,7 +404,7 @@ class UserDeleteView(APIView):
     permission_classes = [IsAuthenticated]
 
     def delete(self, request, pk):
-        if request.user.role not in ('SUPER_ADMIN', 'ADMIN'):
+        if request.user.role not in ('SUPER_ADMIN', 'ADMIN') and not request.user.is_admin_user:
             return Response(
                 {"detail": "You do not have permission to delete users."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -415,11 +419,12 @@ class UserDeleteView(APIView):
         except User.DoesNotExist:
             return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # ADMIN can only delete their own users
-        if request.user.role == 'ADMIN':
-            if user.role != 'USER' or user.admin_owner_id != request.user.id:
+        # ADMIN or ADMIN USER can only delete their own users
+        if request.user.role == 'ADMIN' or request.user.is_admin_user:
+            admin_owner = request.user if request.user.role == 'ADMIN' else request.user.admin_owner
+            if user.admin_owner_id != admin_owner.id:
                 return Response(
-                    {"detail": "Admins can only delete their own User accounts."},
+                    {"detail": "Admins and Admin Users can only delete their own accounts."},
                     status=status.HTTP_403_FORBIDDEN,
                 )
 

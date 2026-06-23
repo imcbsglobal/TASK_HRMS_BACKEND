@@ -75,7 +75,7 @@ class UserWithAccessSerializer(serializers.ModelSerializer):
         model = User
         fields = ['id', 'username', 'email', 'first_name', 'last_name', 'is_active', 'role',
                   'profile_image', 'employee_profile_image',
-                  'user_role', 'menu_access', 'accessible_menus']
+                  'user_role', 'menu_access', 'accessible_menus', 'is_admin_user']
 
     def get_profile_image(self, obj):
         if obj.profile_image:

@@ -15,9 +15,15 @@ from .serializers import ExperienceCertificateSerializer
 from activitylog.utils import log_activity
 
 
+def _is_admin(user):
+    return (
+        user.role in ('SUPER_ADMIN', 'ADMIN') or
+        getattr(user, 'is_admin_user', False)
+    )
+
 def _get_admin_owner(user):
-    if user.role == 'ADMIN':
-        return user
+    if user.role == 'ADMIN' or getattr(user, 'is_admin_user', False):
+        return user if user.role == 'ADMIN' else user.admin_owner
     if user.role == 'USER':
         return user.admin_owner
     return None
@@ -89,7 +95,7 @@ class ExperienceCertificateListCreateView(APIView):
         return Response(serializer.data)
 
     def post(self, request):
-        if request.user.role == 'USER':
+        if not _is_admin(request.user):
             return Response(
                 {'detail': 'You do not have permission to create experience certificates.'},
                 status=status.HTTP_403_FORBIDDEN,
@@ -151,7 +157,7 @@ class ExperienceCertificateDetailView(APIView):
         return Response(ExperienceCertificateSerializer(certificate, context={'request': request}).data)
 
     def patch(self, request, pk):
-        if request.user.role == 'USER':
+        if not _is_admin(request.user):
             return Response(
                 {'detail': 'You do not have permission to update experience certificates.'},
                 status=status.HTTP_403_FORBIDDEN,
@@ -184,7 +190,7 @@ class ExperienceCertificateDetailView(APIView):
         return Response(serializer.data)
 
     def delete(self, request, pk):
-        if request.user.role not in ('SUPER_ADMIN', 'ADMIN'):
+        if not _is_admin(request.user):
             return Response(
                 {'detail': 'You do not have permission to delete experience certificates.'},
                 status=status.HTTP_403_FORBIDDEN,
@@ -210,7 +216,7 @@ class ExperienceCertificateIssueView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        if request.user.role == 'USER':
+        if not _is_admin(request.user):
             return Response(
                 {'detail': 'You do not have permission to issue experience certificates.'},
                 status=status.HTTP_403_FORBIDDEN,
@@ -249,7 +255,7 @@ class ExperienceCertificateRevokeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        if request.user.role not in ('SUPER_ADMIN', 'ADMIN'):
+        if not _is_admin(request.user):
             return Response(
                 {'detail': 'You do not have permission to revoke experience certificates.'},
                 status=status.HTTP_403_FORBIDDEN,

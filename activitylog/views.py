@@ -10,7 +10,8 @@ from .serializers import ActivityLogSerializer
 def _is_admin(user):
     return (
         user.is_staff or user.is_superuser or
-        getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin']
+        getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'admin', 'super_admin'] or
+        getattr(user, 'is_admin_user', False)
     )
 
 

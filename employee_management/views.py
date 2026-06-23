@@ -33,6 +33,14 @@ USER_INACTIVE_STATUS = 'inactive'
 # Tenant helpers
 # ---------------------------------------------------------------------------
 
+def _is_admin(user):
+    """Check if user is admin, super admin, or admin user."""
+    return (
+        user.role in ('SUPER_ADMIN', 'ADMIN') 
+        or getattr(user, 'is_admin_user', False)
+    )
+
+
 def _get_admin_owner(user):
     """
     Return the ADMIN who owns the current request's tenant scope.
@@ -41,8 +49,8 @@ def _get_admin_owner(user):
     - ADMIN       : they ARE the tenant root; returns themselves.
     - USER        : belongs to an admin's tenant; returns their admin_owner.
     """
-    if user.role == 'ADMIN':
-        return user
+    if user.role == 'ADMIN' or getattr(user, 'is_admin_user', False):
+        return user if user.role == 'ADMIN' else user.admin_owner
     if user.role == 'USER':
         return user.admin_owner
     return None  # SUPER_ADMIN — cross-tenant access handled per-view
@@ -146,10 +154,10 @@ class EmployeeListCreateView(APIView):
 
     def post(self, request):
         """
-        Only ADMIN (and SUPER_ADMIN) may create employees.
+        Only ADMIN (and SUPER_ADMIN, ADMIN_USER) may create employees.
         admin_owner is injected server-side; clients cannot supply it.
         """
-        if request.user.role == 'USER':
+        if not _is_admin(request.user):
             return Response(
                 {"detail": "You do not have permission to create employees."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -201,7 +209,7 @@ class EmployeeDetailView(APIView):
         return Response(EmployeeSerializer(employee).data)
 
     def put(self, request, pk):
-        if request.user.role == 'USER':
+        if not _is_admin(request.user):
             return Response(
                 {"detail": "You do not have permission to update employees."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -273,7 +281,7 @@ class EmployeeDetailView(APIView):
         return Response(serializer.data)
 
     def delete(self, request, pk):
-        if request.user.role not in ('SUPER_ADMIN', 'ADMIN'):
+        if not _is_admin(request.user):
             return Response(
                 {"detail": "You do not have permission to delete employees."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -337,7 +345,7 @@ class SalaryIncrementHistoryView(APIView):
             "notes":                  "Annual revision" (optional)
           }
         """
-        if request.user.role == 'USER':
+        if not _is_admin(request.user):
             return Response(
                 {"detail": "You do not have permission to add salary increments."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -494,7 +502,7 @@ class SalaryIncrementHistoryDetailView(APIView):
         Edit an existing increment log entry (notes, dates, cycle).
         Does NOT change employee salary — editing history only.
         """
-        if request.user.role == 'USER':
+        if not _is_admin(request.user):
             return Response(
                 {"detail": "You do not have permission to edit salary increments."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -550,7 +558,7 @@ class SalaryIncrementHistoryDetailView(APIView):
         DELETE /employee/employees/<pk>/salary-increments/<log_id>/
         Remove an increment record.
         """
-        if request.user.role not in ('SUPER_ADMIN', 'ADMIN'):
+        if not _is_admin(request.user):
             return Response(
                 {"detail": "You do not have permission to delete increment records."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -592,7 +600,7 @@ class CompleteOffboardingView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        if request.user.role == 'USER':
+        if not _is_admin(request.user):
             return Response(
                 {"detail": "You do not have permission to offboard employees."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -647,7 +655,7 @@ class DepartmentListCreateView(APIView):
         return Response(serializer.data)
 
     def post(self, request):
-        if request.user.role == 'USER':
+        if not _is_admin(request.user):
             return Response(
                 {"detail": "You do not have permission to create departments."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -689,7 +697,7 @@ class DepartmentDetailView(APIView):
         return Response(DepartmentSerializer(dept).data)
 
     def put(self, request, pk):
-        if request.user.role == 'USER':
+        if not _is_admin(request.user):
             return Response(
                 {"detail": "You do not have permission to update departments."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -710,7 +718,7 @@ class DepartmentDetailView(APIView):
         return Response(serializer.data)
 
     def delete(self, request, pk):
-        if request.user.role not in ('SUPER_ADMIN', 'ADMIN'):
+        if not _is_admin(request.user):
             return Response(
                 {"detail": "You do not have permission to delete departments."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -742,7 +750,7 @@ class CustomFieldDefinitionListCreateView(APIView):
         return Response(serializer.data)
 
     def post(self, request):
-        if request.user.role == 'USER':
+        if not _is_admin(request.user):
             return Response(
                 {"detail": "You do not have permission to create custom fields."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -774,7 +782,7 @@ class CustomFieldDefinitionDetailView(APIView):
         return Response(CustomFieldDefinitionSerializer(field).data)
 
     def put(self, request, pk):
-        if request.user.role == 'USER':
+        if not _is_admin(request.user):
             return Response(
                 {"detail": "You do not have permission to update custom fields."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -788,7 +796,7 @@ class CustomFieldDefinitionDetailView(APIView):
         return Response(serializer.data)
 
     def delete(self, request, pk):
-        if request.user.role not in ('SUPER_ADMIN', 'ADMIN'):
+        if not _is_admin(request.user):
             return Response(
                 {"detail": "You do not have permission to delete custom fields."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -982,7 +990,7 @@ class EmployeeDocumentListCreateView(APIView):
         return Response(EmployeeDocumentSerializer(docs, many=True, context={'request': request}).data)
 
     def post(self, request, employee_id):
-        if request.user.role == 'USER':
+        if not _is_admin(request.user):
             return Response(
                 {"detail": "You do not have permission to upload documents."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -1027,7 +1035,7 @@ class EmployeeDocumentDetailView(APIView):
         return Response(EmployeeDocumentSerializer(doc, context={'request': request}).data)
 
     def put(self, request, employee_id, pk):
-        if request.user.role == 'USER':
+        if not _is_admin(request.user):
             return Response(
                 {"detail": "You do not have permission to update documents."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -1048,7 +1056,7 @@ class EmployeeDocumentDetailView(APIView):
         return Response(serializer.data)
 
     def delete(self, request, employee_id, pk):
-        if request.user.role not in ('SUPER_ADMIN', 'ADMIN'):
+        if not _is_admin(request.user):
             return Response(
                 {"detail": "You do not have permission to delete documents."},
                 status=status.HTTP_403_FORBIDDEN,
