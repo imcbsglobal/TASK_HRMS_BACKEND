@@ -78,6 +78,12 @@ class User(AbstractBaseUser, PermissionsMixin):
     # One token per user; overwritten on each new device login.
     fcm_token = models.TextField(blank=True, default='')
 
+    # ── Admin User flag ───────────────────────────────────────────────────────
+    # True when an ADMIN creates a USER with "Admin User (Full Access)" type.
+    # The user's role stays 'USER' (tenant isolation is preserved) but they are
+    # granted all menus automatically and displayed as "Admin User" in the UI.
+    is_admin_user = models.BooleanField(default=False)
+
     # ── Tenant isolation ──────────────────────────────────────────────────────
     # Every USER belongs to the ADMIN who created them.
     # ADMIN and SUPER_ADMIN rows have this NULL.
