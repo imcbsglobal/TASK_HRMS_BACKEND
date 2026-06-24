@@ -38,7 +38,7 @@ class AttendanceSerializer(serializers.ModelSerializer):
             'date', 'date_formatted',
             'check_in_time', 'check_in_time_formatted',
             'check_out_time', 'check_out_time_formatted',
-            'status', 'total_hours', 'notes',
+            'status', 'total_hours', 'net_working_hours', 'notes',
             'is_verified', 'verified_by', 'verified_by_name', 'verified_at',
             'late_request', 'late_request_reason', 'late_request_status',
             'late_approved_by', 'late_approved_by_name', 'late_approved_at',
@@ -564,6 +564,7 @@ class AttendanceSettingsSerializer(serializers.ModelSerializer):
             # Punch-method toggles
             'face_punch_enabled',
             'normal_checkin_enabled',
+            'face_break_enabled',
             # Tenant – injected by the view, never from client
             'admin_owner',
             'created_at', 'updated_at',

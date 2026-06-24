@@ -44,6 +44,7 @@ class Attendance(models.Model):
     is_wfh = models.BooleanField(default=False, help_text='True if this attendance is for a work-from-home day.')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='absent')
     total_hours = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
+    net_working_hours = models.DecimalField(max_digits=5, decimal_places=2, default=0.00, help_text='Total hours minus break time.')
     total_break_minutes = models.IntegerField(default=0, help_text='Total break duration in minutes for this day.')
     notes = models.TextField(blank=True, null=True)
 
@@ -105,6 +106,8 @@ class Attendance(models.Model):
             delta = self.check_out_time - self.check_in_time
             hours = delta.total_seconds() / 3600
             self.total_hours = round(hours, 2)
+            break_hours = (self.total_break_minutes or 0) / 60.0
+            self.net_working_hours = round(max(0, hours - break_hours), 2)
             return self.total_hours
         return 0.00
 
@@ -330,6 +333,13 @@ class AttendanceSettings(models.Model):
         help_text=(
             "When True employees can use the standard check-in / check-out endpoints. "
             "Set to False to disable normal (non-face) check-in/out."
+        ),
+    )
+    face_break_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "When True employees can use face recognition to start/end breaks. "
+            "Set to False to disable face-based break recording."
         ),
     )
     # ─────────────────────────────────────────────────────────────────────────

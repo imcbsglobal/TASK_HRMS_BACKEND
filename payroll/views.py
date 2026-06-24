@@ -345,6 +345,73 @@ def _check_policy_violations(employee, year, month, policy_data, admin, total_da
                 'requests':           annotated_early,
             })
 
+    # ── Break Deduction violations ───────────────────────────────────────────
+    bd_policy = policy_data.get('attendance', {}).get('breakDeduction', {})
+    if bd_policy.get('enabled', True):
+        allowed_break_min = int(bd_policy.get('allowedBreakMinutes', 30))
+        bd_tiers = bd_policy.get('tiers', [])
+        required_hours = duty_hours
+
+        # Attendance records with break data for this month
+        att_qs = Attendance.objects.filter(
+            user=auth_user,
+            date__year=year,
+            date__month=month,
+            total_break_minutes__gt=0,
+        ).order_by('date')
+
+        annotated_break = []
+        for att in att_qs:
+            net_hours = Decimal(str(att.net_working_hours or 0))
+            # No penalty if the employee met the required working hours
+            if net_hours >= required_hours:
+                continue
+            excess_min = max(0, att.total_break_minutes - allowed_break_min)
+            act = _tier_action_for_minutes(bd_tiers, excess_min) if bd_tiers else 'warn_only'
+            annotated_break.append({
+                'id': att.id,
+                'date': str(att.date),
+                'total_break_minutes': att.total_break_minutes,
+                'net_working_hours': float(net_hours),
+                'required_hours': float(required_hours),
+                'excess_minutes': round(excess_min),
+                'tier_action': act,
+            })
+
+        billable_break_days = len(annotated_break)
+
+        if billable_break_days > 0:
+            worst_excess = max(r['excess_minutes'] for r in annotated_break)
+
+            action = _tier_action_for_minutes(bd_tiers, worst_excess) if bd_tiers else 'warn_only'
+
+            desc = (
+                f"Break time exceeded — net hours below required "
+                f"({billable_break_days} day(s), allowed break {allowed_break_min} min/day)"
+            )
+
+            deduction_amount = _policy_fine_amount(bd_policy, billable_break_days)
+            if deduction_amount is None:
+                deduction_amount = _deduction_for_action(action, billable_break_days)
+
+            violations.append({
+                'violation_type': 'break_excess',
+                'description': desc,
+                'count': billable_break_days,
+                'billable_count': billable_break_days,
+                'forgiven': 0,
+                'action': action,
+                'fine': bd_policy.get('fine', {}),
+                'allowed_break_minutes': allowed_break_min,
+                'required_hours': float(required_hours),
+                'per_day_salary': float(per_day),
+                'per_half_day_salary': float(per_half_day),
+                'per_half_hour_salary': float(per_half_hour),
+                'total_days': total_days,
+                'deduction_amount': float(deduction_amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
+                'requests': annotated_break,
+            })
+
     return violations
 
 
@@ -507,6 +574,7 @@ def _policy_violation_label(violation_type):
     labels = {
         'late_arrival': 'Late Arrival',
         'early_departure': 'Early Departure',
+        'break_excess': 'Break Excess',
         'all': 'All Violations',
     }
     return labels.get(violation_type or 'all', str(violation_type).replace('_', ' ').title())
@@ -1132,6 +1200,7 @@ class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
                     _policy_decision_qs(employee, year, month, admin)
                     .values_list('deduction_name', flat=True)
                 )
+                all_deduction_name = _policy_decision_name('Deduction', 'all', month, year)
                 for violation in emp_violations:
                     violation_type = violation.get('violation_type') or 'all'
                     deduction_name = _policy_decision_name('Deduction', violation_type, month, year)
@@ -1140,6 +1209,8 @@ class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
                         violation['decision_status'] = 'approved_deduct'
                     elif waiver_name in decision_names:
                         violation['decision_status'] = 'waived'
+                    elif all_deduction_name in decision_names:
+                        violation['decision_status'] = 'approved_deduct'
                     else:
                         violation['decision_status'] = 'pending'
 
@@ -1308,12 +1379,14 @@ class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
                 _policy_decision_qs(employee, year, month, admin)
                 .values_list('deduction_name', flat=True)
             )
+            all_deduction_name = _policy_decision_name('Deduction', 'all', month, year)
             for v in monthly_violations:
                 vtype = v.get('violation_type') or 'all'
                 ded_name  = _policy_decision_name('Deduction', vtype, month, year)
                 waiv_name = _policy_decision_name('Waiver',    vtype, month, year)
                 if ded_name  in decision_names: v['decision_status'] = 'approved_deduct'
                 elif waiv_name in decision_names: v['decision_status'] = 'waived'
+                elif all_deduction_name in decision_names: v['decision_status'] = 'approved_deduct'
                 else: v['decision_status'] = 'pending'
 
             already_applied = any(v.get('decision_status') == 'approved_deduct' for v in monthly_violations)
@@ -1344,6 +1417,8 @@ class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
             })
 
         return Response(result, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'], url_path='apply-policy-deduction')
     def apply_policy_deduction(self, request):
         """
         POST /api/payroll/apply-policy-deduction/

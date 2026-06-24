@@ -3272,8 +3272,143 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
             'message': 'Successfully checked out',
             'attendance': AttendanceSerializer(attendance).data
         }, status=status.HTTP_200_OK)
-    
- 
+
+    @action(detail=False, methods=['post'], url_path='break-in')
+    def break_in(self, request):
+        """
+        Face-recognition–based break start.
+        Employee captures their face → face is verified → break is started.
+        No location required.
+        POST /api/attendance/face/break-in/
+        """
+        user = request.user
+        image_data = request.FILES.get('image') or request.data.get('image')
+        notes = request.data.get('notes', '')
+
+        if not image_data:
+            return Response({'error': 'Image is required for face break-in.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        admin_owner = _get_admin_owner(user)
+        _face_break_settings = AttendanceSettings.objects.filter(admin_owner=admin_owner).order_by('-id').first()
+        if _face_break_settings and not _face_break_settings.face_break_enabled:
+            return Response(
+                {'error': 'Face break-in/out is currently disabled for this organisation.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if _face_break_settings and not _face_break_settings.face_punch_enabled:
+            return Response(
+                {'error': 'Face punch-in/out is currently disabled for this organisation.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        verified, msg = self._verify_face(user, image_data)
+        if not verified:
+            return Response({'error': msg}, status=status.HTTP_403_FORBIDDEN)
+
+        today = timezone.now().date()
+        current_time = timezone.now()
+
+        try:
+            attendance = Attendance.objects.get(user=user, date=today, admin_owner=admin_owner)
+        except Attendance.DoesNotExist:
+            return Response({'error': 'No check-in record found for today. Please check in first.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not attendance.check_in_time:
+            return Response({'error': 'No check-in record found for today. Please check in first.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if attendance.check_out_time:
+            return Response({'error': 'Already checked out today. Cannot start break.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check for active break
+        active_break = BreakRecord.objects.filter(
+            user=user, attendance=attendance, break_end__isnull=True
+        ).first()
+        if active_break:
+            return Response({'error': 'You already have an active break. Please end it first.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        break_record = BreakRecord.objects.create(
+            admin_owner=admin_owner,
+            attendance=attendance,
+            user=user,
+            break_start=current_time,
+        )
+
+        from .serializers import BreakRecordSerializer
+        return Response({
+            'message': 'Break started successfully.',
+            'break': BreakRecordSerializer(break_record).data,
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'], url_path='break-out')
+    def break_out(self, request):
+        """
+        Face-recognition–based break end.
+        Employee captures their face → face is verified → active break is ended.
+        No location required.
+        POST /api/attendance/face/break-out/
+        """
+        user = request.user
+        image_data = request.FILES.get('image') or request.data.get('image')
+
+        if not image_data:
+            return Response({'error': 'Image is required for face break-out.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        admin_owner = _get_admin_owner(user)
+        _face_break_settings = AttendanceSettings.objects.filter(admin_owner=admin_owner).order_by('-id').first()
+        if _face_break_settings and not _face_break_settings.face_break_enabled:
+            return Response(
+                {'error': 'Face break-in/out is currently disabled for this organisation.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if _face_break_settings and not _face_break_settings.face_punch_enabled:
+            return Response(
+                {'error': 'Face punch-in/out is currently disabled for this organisation.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        verified, msg = self._verify_face(user, image_data)
+        if not verified:
+            return Response({'error': msg}, status=status.HTTP_403_FORBIDDEN)
+
+        today = timezone.now().date()
+        current_time = timezone.now()
+
+        try:
+            attendance = Attendance.objects.get(user=user, date=today, admin_owner=admin_owner)
+        except Attendance.DoesNotExist:
+            return Response({'error': 'No check-in record found for today.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not attendance.check_in_time:
+            return Response({'error': 'No check-in record found for today.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        active_break = BreakRecord.objects.filter(
+            user=user, attendance=attendance, break_end__isnull=True
+        ).first()
+        if not active_break:
+            return Response({'error': 'No active break found.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        active_break.break_end = current_time
+        active_break.save()
+
+        # Sync total break minutes on the attendance record
+        self._sync_break_total(attendance)
+
+        from .serializers import BreakRecordSerializer
+        return Response({
+            'message': 'Break ended successfully.',
+            'break': BreakRecordSerializer(active_break).data,
+        }, status=status.HTTP_200_OK)
+
+    def _sync_break_total(self, attendance):
+        """Recalculate and persist total_break_minutes for the given attendance."""
+        total = BreakRecord.objects.filter(
+            attendance=attendance,
+            break_end__isnull=False,
+        ).aggregate(total=Sum('duration_minutes'))['total'] or 0
+        attendance.total_break_minutes = total
+        attendance.save(update_fields=['total_break_minutes', 'updated_at'])
+
+  
 class SalaryAdvanceRequestViewSet(viewsets.ModelViewSet):
     """
     Salary Advance Request ViewSet
