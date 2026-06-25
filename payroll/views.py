@@ -62,27 +62,36 @@ def _minutes_late(actual_time, duty_start, grace_minutes=0):
     """
     How many minutes after (duty_start + grace) did the employee arrive?
     actual_time and duty_start are datetime.time objects.
-    Returns 0 if within grace.
+    Returns 0 if within grace. Capped at 720 min (12h).
+    Handles night-shift: if arrival < duty_start on same base date,
+    adds 24h to arrival (assumes arrival is next day).
     """
     from datetime import datetime as _dt
     base = _dt(2000, 1, 1)
     actual_dt = base.replace(hour=actual_time.hour, minute=actual_time.minute, second=0)
     limit_dt  = base.replace(hour=duty_start.hour,  minute=duty_start.minute, second=0)
-    delta = (actual_dt - limit_dt).total_seconds() / 60 + grace_minutes  # negative = early (ok)
-    return max(0, delta - grace_minutes)
+    delta = (actual_dt - limit_dt).total_seconds() / 60
+    if delta < -360:  # night-shift: arrival is next day
+        delta += 1440
+    return min(max(0, delta - grace_minutes), 720)
 
 
 def _minutes_early(actual_time, duty_end, buffer_minutes=0):
     """
     How many minutes before (duty_end - buffer) did the employee leave?
-    Returns 0 if within buffer.
+    Returns 0 if within buffer. Capped at 720 min (12h) to prevent
+    unreasonable values from bad data.
+    Handles night-shift crossing: if duty_end < departure on same base date,
+    adds 24h to duty_end (assumes departure is on duty_end's day).
     """
     from datetime import datetime as _dt
     base = _dt(2000, 1, 1)
     actual_dt = base.replace(hour=actual_time.hour, minute=actual_time.minute, second=0)
     limit_dt  = base.replace(hour=duty_end.hour,    minute=duty_end.minute,    second=0)
     delta = (limit_dt - actual_dt).total_seconds() / 60  # positive = left early
-    return max(0, delta - buffer_minutes)
+    if delta < -360:  # night-shift wrap: duty_end is next day
+        delta += 1440
+    return min(max(0, delta - buffer_minutes), 720)
 
 
 def _tier_action_for_minutes(tiers, minutes):
@@ -1283,12 +1292,10 @@ class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
         # are excluded so the daily report reflects actual attendance impact.
         late_day_qs  = LateArrivalRequest.objects.filter(
             date=query_date, admin_owner=admin,
-            status__in=['approved', 'waived'],
-        ).select_related('user').order_by('date')
+        ).exclude(status__in=['rejected', 'cancelled']).select_related('user').order_by('date')
         early_day_qs = EarlyDepartureRequest.objects.filter(
             date=query_date, admin_owner=admin,
-            status__in=['approved', 'waived'],
-        ).select_related('user').order_by('date')
+        ).exclude(status__in=['rejected', 'cancelled']).select_related('user').order_by('date')
 
         # Build a map: auth_user_id → employee record (active employees only)
         _OFFBOARDED = {'terminated', 'resigned', 'retired', 'offboarded', 'inactive'}
@@ -1346,6 +1353,7 @@ class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
                     'admin_notes':  req.admin_notes,
                     'tier_action':  act,
                     'is_waived':    req.status == 'waived',
+                    'is_deducted':  False,  # resolved below
                     'type':         'late',
                 })
 
@@ -1365,8 +1373,30 @@ class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
                     'admin_notes':      req.admin_notes,
                     'tier_action':      act,
                     'is_waived':        req.status == 'waived',
+                    'is_deducted':      False,  # resolved below
                     'type':             'early',
                 })
+
+            # Resolve per-request deduction status by checking Deduction table
+            _month_label = timezone.now().strftime('%b %Y')
+            late_ded_names  = [f"Request Deduction - Late Arrival #{r['id']} - {_month_label}" for r in late_items]
+            early_ded_names = [f"Request Deduction - Early Departure #{r['id']} - {_month_label}" for r in early_items]
+            all_ded_names = late_ded_names + early_ded_names
+            if all_ded_names:
+                existing_ded = set(
+                    Deduction.objects.filter(
+                        employee=employee, year=year, month=month,
+                        deduction_name__in=all_ded_names,
+                    ).values_list('deduction_name', flat=True)
+                )
+                for r in late_items:
+                    dn = f"Request Deduction - Late Arrival #{r['id']} - {_month_label}"
+                    if dn in existing_ded:
+                        r['is_deducted'] = True
+                for r in early_items:
+                    dn = f"Request Deduction - Early Departure #{r['id']} - {_month_label}"
+                    if dn in existing_ded:
+                        r['is_deducted'] = True
 
             # -- Monthly violation check (to know if policy threshold is breached) --
             monthly_violations = _check_policy_violations(employee, year, month, policy_data, admin, total_days=_total_days_dv)
@@ -1631,4 +1661,103 @@ class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
             'month': waiver.month,
             'description': waiver.description,
             'message': 'Policy penalty waived successfully.',
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['post'], url_path='deduct-request')
+    def deduct_request(self, request):
+        """
+        POST /api/payroll/deduct-request/
+
+        Per-request salary deduction (not a monthly policy penalty).
+        Body:
+          { "request_type": "late"|"early",
+            "request_id": <int>,
+            "employee_id": <int>,
+            "amount": <decimal>,
+            "reason": "<string>" }
+
+        Creates a Deduction record with name "Request Deduction - Late Arrival
+        #{id}" so it does not conflict with monthly policy deductions/waivers.
+        """
+        request_type = request.data.get('request_type')
+        request_id   = request.data.get('request_id')
+        employee_id  = request.data.get('employee_id')
+        amount       = request.data.get('amount')
+        reason       = request.data.get('reason', '')
+
+        if not all([request_type, request_id, employee_id, amount]):
+            return Response({'error': 'request_type, request_id, employee_id, and amount are required'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            amount = Decimal(str(amount))
+        except (ValueError, Exception):
+            return Response({'error': 'Invalid amount'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user  = request.user
+        admin = _get_admin_owner(user)
+
+        emp_qs = Employee.objects.all()
+        if user.role != 'SUPER_ADMIN':
+            if admin is None:
+                return Response({'error': 'No admin tenant found'}, status=status.HTTP_403_FORBIDDEN)
+            emp_qs = emp_qs.filter(admin_owner=admin)
+
+        try:
+            employee = emp_qs.get(id=employee_id)
+        except Employee.DoesNotExist:
+            return Response({'error': 'Employee not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        now = timezone.now()
+        label = 'Late Arrival' if request_type == 'late' else 'Early Departure'
+        deduction_name = f"Request Deduction - {label} #{request_id} - {now.strftime('%b %Y')}"
+
+        # Idempotency: check if already deducted
+        existing = Deduction.objects.filter(
+            employee=employee, deduction_name=deduction_name,
+            year=now.year, month=now.month,
+        ).first()
+        if existing:
+            return Response({
+                'id': existing.id,
+                'employee_id': employee.id,
+                'employee_name': f"{employee.first_name} {employee.last_name}",
+                'deduction_name': existing.deduction_name,
+                'amount': str(existing.amount),
+                'year': existing.year,
+                'month': existing.month,
+                'description': existing.description,
+                'message': f'Deduction already applied for this request.',
+                'already_exists': True,
+            }, status=status.HTTP_200_OK)
+
+        deduction = Deduction.objects.create(
+            employee=employee,
+            deduction_name=deduction_name,
+            year=now.year,
+            month=now.month,
+            amount=amount,
+            description=reason or f"Deduction for {label} request #{request_id}",
+            is_active=True,
+            admin_owner=admin,
+        )
+
+        log_activity(
+            user=request.user,
+            action_type='CREATE',
+            module='Payroll',
+            description=f"Per-request deduction of ₹{amount} for {employee} ({label} #{request_id})",
+            request=request,
+        )
+
+        return Response({
+            'id': deduction.id,
+            'employee_id': employee.id,
+            'employee_name': f"{employee.first_name} {employee.last_name}",
+            'deduction_name': deduction.deduction_name,
+            'amount': str(deduction.amount),
+            'year': deduction.year,
+            'month': deduction.month,
+            'description': deduction.description,
+            'message': f"Deduction of ₹{amount} applied for {label} request.",
         }, status=status.HTTP_201_CREATED)
