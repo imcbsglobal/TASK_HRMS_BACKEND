@@ -10,6 +10,10 @@ class ActivityLog(models.Model):
         ('DELETE', 'Delete'),
         ('LOGIN', 'Login'),
         ('LOGOUT', 'Logout'),
+        ('EXPORT', 'Export'),
+        ('IMPORT', 'Import'),
+        ('VIEW', 'View'),
+        ('SETTINGS', 'Settings'),
         ('OTHER', 'Other'),
     )
 

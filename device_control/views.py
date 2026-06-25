@@ -165,6 +165,14 @@ class DeviceListView(APIView):
         # Normalise the device list field name
         devices = customer.get('registered_devices', [])
 
+        log_activity(
+            user=request.user,
+            action_type='VIEW',
+            module='Device Control',
+            description=f"Viewed device list for client '{target_client_id}' ({len(devices)} devices)",
+            request=request,
+        )
+
         return Response({
             'client_id':        customer.get('client_id'),
             'customer_name':    customer.get('customer_name'),

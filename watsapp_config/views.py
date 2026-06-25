@@ -10,6 +10,7 @@ from .serializers import (
     WhatsAppAdminNumberSerializer,
     WhatsAppNotificationPurposeSerializer,
 )
+from activitylog.utils import log_activity
 
 
 def _is_admin(user):
@@ -130,6 +131,22 @@ class WhatsAppConfigView(APIView):
                     }
                 )
 
+        sections = []
+        if 'config' in data:
+            sections.append('API config')
+        if 'admin_numbers' in data:
+            sections.append('admin numbers')
+        if 'purposes' in data:
+            sections.append('notification purposes')
+
+        log_activity(
+            user=request.user,
+            action_type='SETTINGS',
+            module='WhatsApp Config',
+            description=f"Updated WhatsApp configuration ({', '.join(sections)})",
+            request=request,
+        )
+
         return Response({'detail': 'Saved successfully.'}, status=status.HTTP_200_OK)
 
 
@@ -168,6 +185,13 @@ class WhatsAppTestView(APIView):
                     timeout=10,
                 )
                 if resp.status_code == 200:
+                    log_activity(
+                        user=request.user,
+                        action_type='OTHER',
+                        module='WhatsApp Config',
+                        description=f"Tested WhatsApp connection (DXing) - successful",
+                        request=request,
+                    )
                     return Response({'detail': 'DXing connection successful! Test message sent.'})
                 return Response(
                     {'error': f"DXing returned {resp.status_code}: {resp.text}"},
@@ -178,6 +202,13 @@ class WhatsAppTestView(APIView):
                 url  = f"https://api.ultramsg.com/{instance_id}/instance/status"
                 resp = requests.get(url, params={'token': api_token}, timeout=10)
                 if resp.status_code == 200:
+                    log_activity(
+                        user=request.user,
+                        action_type='OTHER',
+                        module='WhatsApp Config',
+                        description=f"Tested WhatsApp connection (UltraMsg) - successful",
+                        request=request,
+                    )
                     return Response({'detail': 'Connection successful!'})
                 return Response(
                     {'error': f"UltraMsg returned {resp.status_code}: {resp.text}"},
@@ -192,6 +223,13 @@ class WhatsAppTestView(APIView):
                     timeout=10,
                 )
                 if resp.status_code == 200:
+                    log_activity(
+                        user=request.user,
+                        action_type='OTHER',
+                        module='WhatsApp Config',
+                        description=f"Tested WhatsApp connection (WaAPI) - successful",
+                        request=request,
+                    )
                     return Response({'detail': 'Connection successful!'})
                 return Response(
                     {'error': f"WaAPI returned {resp.status_code}: {resp.text}"},
@@ -202,6 +240,13 @@ class WhatsAppTestView(APIView):
                 from twilio.rest import Client
                 client = Client(instance_id, api_token)
                 client.api.accounts(instance_id).fetch()
+                log_activity(
+                    user=request.user,
+                    action_type='OTHER',
+                    module='WhatsApp Config',
+                    description=f"Tested WhatsApp connection (Twilio) - successful",
+                    request=request,
+                )
                 return Response({'detail': 'Twilio connection successful!'})
 
             elif provider == 'meta':
@@ -212,6 +257,13 @@ class WhatsAppTestView(APIView):
                     timeout=10,
                 )
                 if resp.status_code == 200:
+                    log_activity(
+                        user=request.user,
+                        action_type='OTHER',
+                        module='WhatsApp Config',
+                        description=f"Tested WhatsApp connection (Meta) - successful",
+                        request=request,
+                    )
                     return Response({'detail': 'Meta Cloud API connection successful!'})
                 return Response(
                     {'error': f"Meta returned {resp.status_code}: {resp.text}"},
@@ -226,6 +278,13 @@ class WhatsAppTestView(APIView):
                     timeout=10,
                 )
                 if resp.status_code == 200:
+                    log_activity(
+                        user=request.user,
+                        action_type='OTHER',
+                        module='WhatsApp Config',
+                        description=f"Tested WhatsApp connection (Wablas) - successful",
+                        request=request,
+                    )
                     return Response({'detail': 'Wablas connection successful!'})
                 return Response(
                     {'error': f"Wablas returned {resp.status_code}: {resp.text}"},
@@ -233,6 +292,13 @@ class WhatsAppTestView(APIView):
                 )
 
             else:
+                log_activity(
+                    user=request.user,
+                    action_type='OTHER',
+                    module='WhatsApp Config',
+                    description=f"Saved WhatsApp config for custom provider '{provider}'",
+                    request=request,
+                )
                 return Response({'detail': 'Credentials saved. Cannot auto-test custom providers.'})
 
         except requests.exceptions.ConnectionError:

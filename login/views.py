@@ -351,6 +351,14 @@ class UserUpdateView(APIView):
         serializer.save()
         user.save()
 
+        log_activity(
+            user=request.user,
+            action_type='UPDATE',
+            module='User Management',
+            description=f"Updated user '{user.username}'",
+            request=request,
+        )
+
         # ── Auto-inactivate linked employee when user is deactivated ──────────
         # If is_active was explicitly set to False, mark the linked employee
         # record as 'inactive' so it no longer appears in Employee Management.
@@ -428,6 +436,13 @@ class UserDeleteView(APIView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
+        log_activity(
+            user=request.user,
+            action_type='DELETE',
+            module='User Management',
+            description=f"Deleted user '{user.username}' (role: {user.role})",
+            request=request,
+        )
         user.delete()
         return Response({"message": "User deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
 
@@ -789,6 +804,16 @@ class CompanySettingsCurrentView(APIView):
         serializer = CompanySettingsSerializer(settings_obj, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save(owner=request.user)
+
+            changed_fields = [k for k in request.data.keys() if k != 'owner']
+            log_activity(
+                user=request.user,
+                action_type='SETTINGS',
+                module='Company Settings',
+                description=f"Updated company settings: {', '.join(changed_fields)}",
+                request=request,
+            )
+
             return Response(serializer.data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -842,6 +867,14 @@ class ChangePasswordView(APIView):
         user.plain_password = new_password   # keep plain_password in sync
         user.save()
 
+        log_activity(
+            user=request.user,
+            action_type='SETTINGS',
+            module='User Management',
+            description=f"User '{user.username}' changed their password",
+            request=request,
+        )
+
         return Response(
             {"detail": "Password changed successfully."},
             status=status.HTTP_200_OK,
@@ -869,6 +902,14 @@ class FCMTokenView(APIView):
         request.user.fcm_token = token
         request.user.save(update_fields=['fcm_token'])
 
+        log_activity(
+            user=request.user,
+            action_type='SETTINGS',
+            module='User Management',
+            description=f"FCM token registered for user '{request.user.username}'",
+            request=request,
+        )
+
         return Response(
             {"detail": "FCM token registered successfully."},
             status=status.HTTP_200_OK,
@@ -878,6 +919,15 @@ class FCMTokenView(APIView):
         """Clear the FCM token (call on logout from mobile app)."""
         request.user.fcm_token = ''
         request.user.save(update_fields=['fcm_token'])
+
+        log_activity(
+            user=request.user,
+            action_type='SETTINGS',
+            module='User Management',
+            description=f"FCM token cleared for user '{request.user.username}'",
+            request=request,
+        )
+
         return Response(
             {"detail": "FCM token cleared."},
             status=status.HTTP_200_OK,

@@ -11,6 +11,7 @@ from .serializers import (
     UserWithAccessSerializer,
     BulkMenuAccessSerializer
 )
+from activitylog.utils import log_activity
 
 User = get_user_model()
 
@@ -82,9 +83,38 @@ class MenuViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if getattr(user, 'role', None) != 'SUPER_ADMIN':
             admin = _get_admin_owner(user)
-            serializer.save(admin_owner=admin)
+            instance = serializer.save(admin_owner=admin)
         else:
-            serializer.save()
+            instance = serializer.save()
+
+        log_activity(
+            user=user,
+            action_type='CREATE',
+            module='Access Control',
+            description=f"Created menu '{instance.name}'",
+            request=self.request,
+        )
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        log_activity(
+            user=self.request.user,
+            action_type='UPDATE',
+            module='Access Control',
+            description=f"Updated menu '{instance.name}'",
+            request=self.request,
+        )
+
+    def perform_destroy(self, instance):
+        name = instance.name
+        instance.delete()
+        log_activity(
+            user=self.request.user,
+            action_type='DELETE',
+            module='Access Control',
+            description=f"Deleted menu '{name}'",
+            request=self.request,
+        )
 
     @action(detail=False, methods=['get'], url_path='hierarchy')
     def hierarchy(self, request):
@@ -161,7 +191,16 @@ class UserMenuAccessViewSet(viewsets.ModelViewSet):
         if serializer.is_valid():
             admin = None if getattr(request.user, 'role', None) == 'SUPER_ADMIN' else _get_admin_owner(request.user)
             user = serializer.save(granted_by=request.user, admin_owner=admin)
-            
+
+            menu_count = len(request.data.get('menu_access', []))
+            log_activity(
+                user=request.user,
+                action_type='UPDATE',
+                module='Access Control',
+                description=f"Bulk updated menu access for user '{user.username}' ({menu_count} menus)",
+                request=request,
+            )
+
             # Return updated user data with access
             user_serializer = UserWithAccessSerializer(user)
             return Response(user_serializer.data, status=status.HTTP_200_OK)
@@ -281,7 +320,16 @@ class UserAccessControlViewSet(viewsets.ViewSet):
                     'admin_owner': admin
                 }
             )
-            
+
+            action = 'CREATE' if created else 'UPDATE'
+            log_activity(
+                user=request.user,
+                action_type=action,
+                module='Access Control',
+                description=f"{'Granted' if created else 'Updated'} menu '{menu.name}' access for user '{user.username}'",
+                request=request,
+            )
+
             serializer = UserMenuAccessSerializer(access)
             return Response(serializer.data, status=status.HTTP_200_OK)
             
@@ -306,8 +354,22 @@ class UserAccessControlViewSet(viewsets.ViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
+            try:
+                menu = Menu.objects.get(pk=menu_id)
+                menu_name = menu.name
+            except Menu.DoesNotExist:
+                menu_name = str(menu_id)
+
             UserMenuAccess.objects.filter(user=user, menu_id=menu_id).delete()
-            
+
+            log_activity(
+                user=request.user,
+                action_type='DELETE',
+                module='Access Control',
+                description=f"Revoked menu '{menu_name}' access from user '{user.username}'",
+                request=request,
+            )
+
             return Response(
                 {"message": "Access revoked successfully"}, 
                 status=status.HTTP_200_OK
@@ -372,7 +434,15 @@ class UserAccessControlViewSet(viewsets.ViewSet):
                 )
             
             UserMenuAccess.objects.bulk_create(new_access)
-            
+
+            log_activity(
+                user=request.user,
+                action_type='CREATE',
+                module='Access Control',
+                description=f"Copied menu access from user '{from_user.username}' to user '{to_user.username}' ({len(new_access)} menus)",
+                request=request,
+            )
+
             # Return updated user data
             serializer = UserWithAccessSerializer(to_user)
             return Response(serializer.data, status=status.HTTP_200_OK)
