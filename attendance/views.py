@@ -160,6 +160,141 @@ def _get_full_name(user):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# AUTO-CREATE LATE / EARLY REQUESTS ON CHECK-IN / CHECK-OUT
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_employee_duty_times(user, admin_owner):
+    """
+    Return (duty_start, duty_end) for the employee linked to *user*.
+    Priority: Employee.duty_start_time / duty_end_time → AttendanceSettings.
+    Either value may be None if not configured.
+    """
+    start = end = None
+    try:
+        from employee_management.models import Employee
+        emp = Employee.objects.filter(email=user.email, admin_owner=admin_owner).first()
+        if emp:
+            start = emp.duty_start_time
+            end   = emp.duty_end_time
+    except Exception:
+        pass
+    settings_obj = AttendanceSettings.objects.filter(admin_owner=admin_owner).order_by('-id').first()
+    if settings_obj:
+        start = start or settings_obj.office_start_time
+        end   = end   or settings_obj.office_end_time
+    return start, end
+
+
+def _get_payroll_policy_late_early(admin_owner):
+    """
+    Read PayrollPolicy for this tenant and return (late_config, early_config).
+    Each is a dict (or empty dict if not configured).
+    """
+    try:
+        from master.models import PayrollPolicy
+        policy_obj = PayrollPolicy.objects.filter(admin_owner=admin_owner).first()
+        if policy_obj and policy_obj.policy_data:
+            att = policy_obj.policy_data.get('attendance', {})
+            return att.get('lateArrival', {}), att.get('earlyDeparture', {})
+    except Exception:
+        pass
+    return {}, {}
+
+
+def _auto_create_late_request(user, admin_owner, attendance):
+    """
+    After a successful check-in, determine if the employee is late
+    according to the configured rules and auto-create a LateArrivalRequest.
+    Silently succeeds – never raises.
+    """
+    try:
+        if not attendance or not attendance.check_in_time:
+            return
+
+        duty_start, _ = _get_employee_duty_times(user, admin_owner)
+        if not duty_start:
+            return
+
+        late_policy, _ = _get_payroll_policy_late_early(admin_owner)
+        if not late_policy.get('enabled', True):
+            return
+
+        grace_min = int(late_policy.get('gracePeriodMin', 0))
+        ci_local  = attendance.check_in_time.astimezone(pytz.timezone('Asia/Kolkata'))
+        ci_time   = ci_local.time()
+
+        # Build the expected start-of-day datetime (same date as check-in)
+        from datetime import datetime as _dt, timedelta as _td
+        base = _dt(ci_local.year, ci_local.month, ci_local.day)
+        limit_dt = base.replace(hour=duty_start.hour, minute=duty_start.minute, second=0)
+        limit_dt += _td(minutes=grace_min)
+
+        if ci_local <= limit_dt:
+            return  # within grace period – not late
+
+        minutes_late = int((ci_local - limit_dt).total_seconds() / 60)
+
+        LateArrivalRequest.objects.get_or_create(
+            user=user,
+            date=attendance.date,
+            admin_owner=admin_owner,
+            defaults={
+                'expected_arrival_time': ci_time,
+                'reason': f'Auto-detected late check-in ({minutes_late} min late)',
+                'status': 'pending',
+            },
+        )
+    except Exception:
+        pass
+
+
+def _auto_create_early_request(user, admin_owner, attendance):
+    """
+    After a successful check-out, determine if the employee left early
+    according to the configured rules and auto-create an EarlyDepartureRequest.
+    Silently succeeds – never raises.
+    """
+    try:
+        if not attendance or not attendance.check_out_time:
+            return
+
+        _, duty_end = _get_employee_duty_times(user, admin_owner)
+        if not duty_end:
+            return
+
+        _, early_policy = _get_payroll_policy_late_early(admin_owner)
+        if not early_policy.get('enabled', True):
+            return
+
+        buffer_min = int(early_policy.get('earlyBufferMin', 0))
+        co_local   = attendance.check_out_time.astimezone(pytz.timezone('Asia/Kolkata'))
+        co_time    = co_local.time()
+
+        from datetime import datetime as _dt, timedelta as _td
+        base = _dt(co_local.year, co_local.month, co_local.day)
+        limit_dt = base.replace(hour=duty_end.hour, minute=duty_end.minute, second=0)
+        limit_dt -= _td(minutes=buffer_min)
+
+        if co_local >= limit_dt:
+            return  # within buffer – not early
+
+        minutes_early = int((limit_dt - co_local).total_seconds() / 60)
+
+        EarlyDepartureRequest.objects.get_or_create(
+            user=user,
+            date=attendance.date,
+            admin_owner=admin_owner,
+            defaults={
+                'expected_departure_time': co_time,
+                'reason': f'Auto-detected early check-out ({minutes_early} min early)',
+                'status': 'pending',
+            },
+        )
+    except Exception:
+        pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ATTENDANCE VIEWSET
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -425,6 +560,10 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             request=request,
         )
 
+        # ── Auto-detect late check-in ──────────────────────────────────────────
+        _auto_create_late_request(user, admin_owner, attendance)
+        # ─────────────────────────────────────────────────────────────────────
+
         return Response({
             'message': 'Successfully checked in',
             'attendance': AttendanceSerializer(attendance).data
@@ -500,6 +639,10 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             description=f"Checked out at {co_local.strftime('%I:%M %p')}",
             request=request,
         )
+
+        # ── Auto-detect early check-out ────────────────────────────────────────
+        _auto_create_early_request(user, admin_owner, attendance)
+        # ─────────────────────────────────────────────────────────────────────
 
         return Response({
             'message': 'Successfully checked out',
@@ -1252,21 +1395,21 @@ class LateArrivalRequestViewSet(viewsets.ModelViewSet):
                 date=late_req.date,
                 admin_owner=admin_owner,
                 defaults={
-                    'status': 'late',
                     'notes': f'Late arrival approved – {late_req.reason}',
                     'is_verified': True,
                     'verified_by': request.user,
                     'verified_at': timezone.now(),
+                    'status': 'late',
                 },
             )
             if not attendance.is_verified:
-                attendance.status = 'late'
                 attendance.notes = f'Late arrival approved – {late_req.reason}'
                 attendance.is_verified = True
                 attendance.verified_by = request.user
                 attendance.verified_at = timezone.now()
+                attendance.status = 'late'
                 attendance.save(update_fields=[
-                    'status', 'notes', 'is_verified', 'verified_by', 'verified_at', 'updated_at',
+                    'notes', 'is_verified', 'verified_by', 'verified_at', 'status', 'updated_at',
                 ])
         elif action_type == 'waive':
             late_req.status = 'waived'
@@ -1277,21 +1420,21 @@ class LateArrivalRequestViewSet(viewsets.ModelViewSet):
                 date=late_req.date,
                 admin_owner=admin_owner,
                 defaults={
-                    'status': 'late',
                     'notes': f'Late arrival waived – {late_req.reason}',
                     'is_verified': True,
                     'verified_by': request.user,
                     'verified_at': timezone.now(),
+                    'status': 'late',
                 },
             )
             if not attendance.is_verified:
-                attendance.status = 'late'
                 attendance.notes = f'Late arrival waived – {late_req.reason}'
                 attendance.is_verified = True
                 attendance.verified_by = request.user
                 attendance.verified_at = timezone.now()
+                attendance.status = 'late'
                 attendance.save(update_fields=[
-                    'status', 'notes', 'is_verified', 'verified_by', 'verified_at', 'updated_at',
+                    'notes', 'is_verified', 'verified_by', 'verified_at', 'status', 'updated_at',
                 ])
         else:
             late_req.status = 'rejected'
@@ -2027,21 +2170,21 @@ class EarlyDepartureRequestViewSet(viewsets.ModelViewSet):
                 date=early_req.date,
                 admin_owner=admin_owner,
                 defaults={
-                    'status': 'half_day',
                     'notes': f'Early departure approved – {early_req.reason}',
                     'is_verified': True,
                     'verified_by': request.user,
                     'verified_at': timezone.now(),
+                    'status': 'present',
                 },
             )
             if not created and not attendance.is_verified:
-                attendance.status = 'half_day'
                 attendance.notes = f'Early departure approved – {early_req.reason}'
                 attendance.is_verified = True
                 attendance.verified_by = request.user
                 attendance.verified_at = timezone.now()
+                attendance.status = 'present'
                 attendance.save(update_fields=[
-                    'status', 'notes', 'is_verified', 'verified_by', 'verified_at', 'updated_at',
+                    'notes', 'is_verified', 'verified_by', 'verified_at', 'status', 'updated_at',
                 ])
         elif action_type == 'waive':
             early_req.status = 'waived'
@@ -2052,21 +2195,21 @@ class EarlyDepartureRequestViewSet(viewsets.ModelViewSet):
                 date=early_req.date,
                 admin_owner=admin_owner,
                 defaults={
-                    'status': 'half_day',
                     'notes': f'Early departure waived – {early_req.reason}',
                     'is_verified': True,
                     'verified_by': request.user,
                     'verified_at': timezone.now(),
+                    'status': 'present',
                 },
             )
             if not created and not attendance.is_verified:
-                attendance.status = 'half_day'
                 attendance.notes = f'Early departure waived – {early_req.reason}'
                 attendance.is_verified = True
                 attendance.verified_by = request.user
                 attendance.verified_at = timezone.now()
+                attendance.status = 'present'
                 attendance.save(update_fields=[
-                    'status', 'notes', 'is_verified', 'verified_by', 'verified_at', 'updated_at',
+                    'notes', 'is_verified', 'verified_by', 'verified_at', 'status', 'updated_at',
                 ])
         else:
             early_req.status = 'rejected'
@@ -2533,6 +2676,13 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+        # ── Auto-detect late check-in / early check-out ────────────────────────
+        if punch_result == 'checked_in':
+            _auto_create_late_request(matched_user, admin_owner, attendance)
+        elif punch_result == 'checked_out':
+            _auto_create_early_request(matched_user, admin_owner, attendance)
+        # ─────────────────────────────────────────────────────────────────────
+
         # Serialize safely so a serializer crash never kills a successful punch
         try:
             att_fresh = (
@@ -2870,6 +3020,14 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
                     {'error': f'{_get_full_name(matched_user) or matched_user.username} has already completed attendance for today.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+
+        # ── Auto-detect late check-in / early check-out ────────────────────────
+        if punch_result == 'checked_in':
+            _auto_create_late_request(matched_user, admin_owner, attendance)
+        elif punch_result == 'checked_out':
+            _auto_create_early_request(matched_user, admin_owner, attendance)
+        # ─────────────────────────────────────────────────────────────────────
+
         # ── 9. Generate JWT tokens (wrapped so a token error never kills the response) ──
         try:
             employee_tokens = _generate_tokens_for_user(matched_user)
@@ -3201,6 +3359,10 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
             else:
                 return Response({'error': 'Already checked in today'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # ── Auto-detect late check-in ──────────────────────────────────────────
+        _auto_create_late_request(user, admin_owner, attendance)
+        # ─────────────────────────────────────────────────────────────────────
+
         return Response({
             'message': 'Successfully checked in',
             'attendance': AttendanceSerializer(attendance).data
@@ -3267,6 +3429,10 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
         if serializer.validated_data.get('notes'):
             attendance.notes = serializer.validated_data['notes']
         attendance.save()
+
+        # ── Auto-detect early check-out ────────────────────────────────────────
+        _auto_create_early_request(user, admin_owner, attendance)
+        # ─────────────────────────────────────────────────────────────────────
 
         return Response({
             'message': 'Successfully checked out',

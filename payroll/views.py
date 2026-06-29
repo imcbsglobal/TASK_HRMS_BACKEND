@@ -6,6 +6,7 @@ from django.db.models import Q, Sum
 from django.utils import timezone
 from datetime import datetime
 import calendar
+import re
 from decimal import Decimal, ROUND_HALF_UP
 
 from .models import Payroll
@@ -1203,44 +1204,82 @@ class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
 
         for employee in emp_qs.select_related('department'):
             emp_violations = _check_policy_violations(employee, year, month, policy_data, admin, total_days=_total_days)
-            if emp_violations:
-                duty_start, duty_end = _get_duty_times(employee, admin)
-                decision_names = set(
-                    _policy_decision_qs(employee, year, month, admin)
-                    .values_list('deduction_name', flat=True)
-                )
-                all_deduction_name = _policy_decision_name('Deduction', 'all', month, year)
-                for violation in emp_violations:
-                    violation_type = violation.get('violation_type') or 'all'
-                    deduction_name = _policy_decision_name('Deduction', violation_type, month, year)
-                    waiver_name = _policy_decision_name('Waiver', violation_type, month, year)
-                    if deduction_name in decision_names:
-                        violation['decision_status'] = 'approved_deduct'
-                    elif waiver_name in decision_names:
-                        violation['decision_status'] = 'waived'
-                    elif all_deduction_name in decision_names:
-                        violation['decision_status'] = 'approved_deduct'
-                    else:
-                        violation['decision_status'] = 'pending'
+            duty_start, duty_end = _get_duty_times(employee, admin)
+            decision_names = set(
+                _policy_decision_qs(employee, year, month, admin)
+                .values_list('deduction_name', flat=True)
+            )
+            all_deduction_name = _policy_decision_name('Deduction', 'all', month, year)
 
-                violations.append({
-                    'employee': {
-                        'id':          employee.id,
-                        'employee_id': employee.employee_id,
-                        'name':        f"{employee.first_name} {employee.last_name}",
-                        'position':    employee.position,
-                        'department':  employee.department.name if employee.department else '',
-                        'salary':      str(employee.salary),
-                        'duty_start':  str(duty_start) if duty_start else None,
-                        'duty_end':    str(duty_end)   if duty_end   else None,
-                    },
-                    'violations':       emp_violations,
-                    'total_deduction':  str(sum(v['deduction_amount'] for v in emp_violations)),
-                    'already_applied':  any(v.get('decision_status') == 'approved_deduct' for v in emp_violations),
-                    'already_waived':   any(v.get('decision_status') == 'waived' for v in emp_violations),
-                    'year':             year,
-                    'month':            month,
-                })
+            # Check for per-request deductions applied from Daily View
+            per_request_deduction_records = Deduction.objects.filter(
+                employee=employee,
+                year=year,
+                month=month,
+                deduction_name__startswith='Request Deduction - ',
+                is_active=True,
+            )
+            per_request_deduction_total = sum(d.amount for d in per_request_deduction_records)
+
+            # Build per-request deduction details (request_type, request_id, amount)
+            # Name format: "Request Deduction - Late Arrival #123 - Jun 2026"
+            per_request_details = []
+            for d in per_request_deduction_records:
+                m = re.match(r'^Request Deduction - (Late Arrival|Early Departure) #(\d+)', d.deduction_name)
+                if m:
+                    label = m.group(1)
+                    req_id = int(m.group(2))
+                    rtype = 'late' if label == 'Late Arrival' else 'early'
+                    per_request_details.append({
+                        'request_type': rtype,
+                        'request_id':   req_id,
+                        'amount':       str(d.amount),
+                        'deduction_name': d.deduction_name,
+                    })
+
+            # Only include employees with violations OR per-request deductions
+            if not emp_violations and per_request_deduction_total <= 0:
+                continue
+
+            for violation in emp_violations:
+                violation_type = violation.get('violation_type') or 'all'
+                deduction_name = _policy_decision_name('Deduction', violation_type, month, year)
+                waiver_name = _policy_decision_name('Waiver', violation_type, month, year)
+                if deduction_name in decision_names:
+                    violation['decision_status'] = 'approved_deduct'
+                elif waiver_name in decision_names:
+                    violation['decision_status'] = 'waived'
+                elif all_deduction_name in decision_names:
+                    violation['decision_status'] = 'approved_deduct'
+                elif per_request_deduction_total > 0:
+                    violation['decision_status'] = 'approved_deduct'
+                else:
+                    violation['decision_status'] = 'pending'
+
+            policy_deduction_total = Decimal(str(sum(v['deduction_amount'] for v in emp_violations)))
+            combined_deduction_total = policy_deduction_total + per_request_deduction_total
+
+            violations.append({
+                'employee': {
+                    'id':          employee.id,
+                    'employee_id': employee.employee_id,
+                    'name':        f"{employee.first_name} {employee.last_name}",
+                    'position':    employee.position,
+                    'department':  employee.department.name if employee.department else '',
+                    'salary':      str(employee.salary),
+                    'duty_start':  str(duty_start) if duty_start else None,
+                    'duty_end':    str(duty_end)   if duty_end   else None,
+                },
+                'violations':                  emp_violations,
+                'total_deduction':             str(combined_deduction_total),
+                'policy_deduction_total':      str(policy_deduction_total),
+                'per_request_deduction_total': str(per_request_deduction_total),
+                'per_request_deductions':      per_request_details,
+                'already_applied':             per_request_deduction_total > 0 or any(v.get('decision_status') == 'approved_deduct' for v in emp_violations),
+                'already_waived':              any(v.get('decision_status') == 'waived' for v in emp_violations),
+                'year':                        year,
+                'month':                       month,
+            })
 
         return Response(violations, status=status.HTTP_200_OK)
 
