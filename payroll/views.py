@@ -1326,16 +1326,6 @@ class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
         _hol_bk_dv = _get_holiday_breakdown(year, month, admin)
         _total_days_dv = max(1, _cal_days_dv - _hol_bk_dv['sunday_count'])
 
-        # Fetch approved (and waived) late and early requests for this day.
-        # Only approved/waived requests are payroll-relevant — pending/rejected/cancelled
-        # are excluded so the daily report reflects actual attendance impact.
-        late_day_qs  = LateArrivalRequest.objects.filter(
-            date=query_date, admin_owner=admin,
-        ).exclude(status__in=['rejected', 'cancelled']).select_related('user').order_by('date')
-        early_day_qs = EarlyDepartureRequest.objects.filter(
-            date=query_date, admin_owner=admin,
-        ).exclude(status__in=['rejected', 'cancelled']).select_related('user').order_by('date')
-
         # Build a map: auth_user_id → employee record (active employees only)
         _OFFBOARDED = {'terminated', 'resigned', 'retired', 'offboarded', 'inactive'}
         emp_qs = Employee.objects.all()
@@ -1346,6 +1336,76 @@ class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
         emp_qs = emp_qs.exclude(status__in=_OFFBOARDED)
 
         emp_by_email = {emp.email.lower(): emp for emp in emp_qs.select_related('department')}
+
+        # ── Auto-detect late/early from raw Attendance records ────────────────
+        # For every employee who punched in/out today, check if they were
+        # late or left early according to the payroll policy.  If so, and they
+        # haven't submitted a request yet, create one automatically (same logic
+        # as _auto_create_late_request / _auto_create_early_request in
+        # attendance/views.py).  This ensures the daily view always shows all
+        # policy violations whether or not the employee submitted a request.
+        import pytz as _pytz
+        from attendance.models import Attendance as _Attendance
+
+        _grace_min  = int(la_policy.get('gracePeriodMin', 0))
+        _buffer_min = int(ed_policy.get('earlyBufferMin', 0))
+        _la_enabled = la_policy.get('enabled', True)
+        _ed_enabled = ed_policy.get('enabled', True)
+
+        _att_qs = _Attendance.objects.filter(
+            date=query_date,
+            admin_owner=admin,
+        ).select_related('user')
+
+        for _att in _att_qs:
+            _emp = emp_by_email.get((_att.user.email or '').lower())
+            if not _emp:
+                continue
+            _duty_start, _duty_end = _get_duty_times(_emp, admin)
+
+            # ── Late check-in ─────────────────────────────────────────────────
+            if _la_enabled and _att.check_in_time and _duty_start:
+                _ci_local = _att.check_in_time.astimezone(_pytz.timezone('Asia/Kolkata'))
+                _ci_time  = _ci_local.time()
+                _mins_late = _minutes_late(_ci_time, _duty_start, _grace_min)
+                if _mins_late > 0:
+                    LateArrivalRequest.objects.get_or_create(
+                        user=_att.user,
+                        date=query_date,
+                        admin_owner=admin,
+                        defaults={
+                            'expected_arrival_time': _ci_time,
+                            'reason': f'Auto-detected late check-in ({round(_mins_late)} min late)',
+                            'status': 'pending',
+                        },
+                    )
+
+            # ── Early check-out ───────────────────────────────────────────────
+            if _ed_enabled and _att.check_out_time and _duty_end:
+                _co_local = _att.check_out_time.astimezone(_pytz.timezone('Asia/Kolkata'))
+                _co_time  = _co_local.time()
+                _mins_early = _minutes_early(_co_time, _duty_end, _buffer_min)
+                if _mins_early > 0:
+                    EarlyDepartureRequest.objects.get_or_create(
+                        user=_att.user,
+                        date=query_date,
+                        admin_owner=admin,
+                        defaults={
+                            'expected_departure_time': _co_time,
+                            'reason': f'Auto-detected early check-out ({round(_mins_early)} min early)',
+                            'status': 'pending',
+                        },
+                    )
+        # ─────────────────────────────────────────────────────────────────────
+
+        # Fetch all late and early requests for this day (include pending so
+        # auto-detected violations are visible; exclude only rejected/cancelled).
+        late_day_qs  = LateArrivalRequest.objects.filter(
+            date=query_date, admin_owner=admin,
+        ).exclude(status__in=['rejected', 'cancelled']).select_related('user').order_by('date')
+        early_day_qs = EarlyDepartureRequest.objects.filter(
+            date=query_date, admin_owner=admin,
+        ).exclude(status__in=['rejected', 'cancelled']).select_related('user').order_by('date')
 
         # Collect unique auth users who have a request today
         auth_user_ids = set(
