@@ -3103,11 +3103,12 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
     #   • It's slower (runs sequentially, ~2× total latency).
     #   • Its cosine threshold is poorly calibrated for diverse skin tones,
     #     causing false rejections even when Facenet512 passes cleanly.
-    # Facenet512 cosine threshold: 0.30 (DeepFace default). We use 0.30 here —
-    # tighter than the old 0.25 because without a second-model safety net we
-    # allow a small buffer, while still being stricter than random chance.
+    # Facenet512 cosine threshold: 0.35 (slightly above the DeepFace default 0.30).
+    # The 0.30 default works well in controlled settings, but real-world webcam
+    # images vary in lighting, angle, and camera quality — raising to 0.35
+    # reduces false rejections while keeping false positives acceptably low.
     _FACE_MODELS = [
-        {'model': 'Facenet512',  'metric': 'cosine',    'threshold': 0.30},
+        {'model': 'Facenet512',  'metric': 'cosine',    'threshold': 0.35},
     ]
 
     @staticmethod
@@ -3280,7 +3281,7 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
                     pass   # Non-fatal — will retry on next successful punch
                 return True, 'Verified'
 
-            return False, f'Face does not match. (Facenet512={distance:.3f}/FAIL)'
+            return False, f'Face does not match. (Facenet512={distance:.3f}/FAIL, threshold={threshold})'
 
         except Exception as e:
             err_str = str(e)
