@@ -462,8 +462,22 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             attendance.verified_at = timezone.now()
             attendance.notes = notes
             if check_in_dt is not None:
+                # Only overwrite check_in_method when the check-in time is actually
+                # being changed (admin explicitly set a new time).  If the submitted
+                # time matches what is already stored, the original method (phone /
+                # face / normal) must be preserved so a manual checkout does not
+                # silently flip the check-in badge to "manual".
+                existing_ci = attendance.check_in_time
+                ci_changed = (
+                    existing_ci is None or
+                    # Compare at-minute precision to ignore sub-second drift
+                    existing_ci.astimezone(pytz.timezone('Asia/Kolkata')).replace(second=0, microsecond=0)
+                    != check_in_dt.replace(second=0, microsecond=0)
+                )
                 attendance.check_in_time = check_in_dt
-                attendance.check_in_method = 'manual'
+                if ci_changed:
+                    attendance.check_in_method = 'manual'
+                # else: leave check_in_method untouched (phone / face / normal)
             if check_out_dt is not None:
                 attendance.check_out_time = check_out_dt
                 attendance.check_out_method = 'manual'

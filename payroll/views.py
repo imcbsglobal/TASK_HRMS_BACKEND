@@ -1532,6 +1532,7 @@ class PayrollViewSet(ActivityLogMixin, viewsets.ModelViewSet):
                     'salary':       str(employee.salary),
                     'duty_start':   str(duty_start) if duty_start else None,
                     'duty_end':     str(duty_end)   if duty_end   else None,
+                    'profile_image': employee.profile_image.url if employee.profile_image else None,
                 },
                 'date':               date_str,
                 'late_requests':      late_items,
