@@ -219,12 +219,21 @@ class EmployeeDetailView(APIView):
         if err:
             return err
 
+        # Handle profile_image removal sentinel
+        profile_image_val = request.data.get('profile_image')
+        if isinstance(profile_image_val, str) and profile_image_val in ('remove', '', 'null'):
+            employee.profile_image = None
+            employee.save(update_fields=['profile_image'])
+            data = {k: v for k, v in request.data.items() if k != 'profile_image'}
+        else:
+            data = request.data
+
         old_status = employee.status
         old_salary = employee.salary
         old_last_increment_date = employee.last_increment_date
         old_increment_cycle_months = employee.increment_cycle_months
         old_next_increment_date = employee.next_increment_date
-        serializer = EmployeeSerializer(employee, data=request.data, partial=True)
+        serializer = EmployeeSerializer(employee, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
 
         with transaction.atomic():
