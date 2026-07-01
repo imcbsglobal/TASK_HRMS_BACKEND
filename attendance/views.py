@@ -1805,14 +1805,14 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             message = 'Leave request approved successfully.'
 
             if is_unpaid:
-                # Unpaid leave → create salary deduction
-                # Half-day unpaid → attendance = half_day; full-day unpaid → attendance = absent
+                # Unpaid leave → mark attendance as absent (full-day) or half_day.
+                # Payroll already deducts salary based on absent_days/half_days count,
+                # so NO separate Deduction record is created — that would double-deduct.
                 if leave_request.duration_type == 'half_day':
-                    working_days = _apply_attendance_records('half_day', 'Unpaid half-day leave')
+                    _apply_attendance_records('half_day', 'Unpaid half-day leave')
                 else:
-                    working_days = _apply_attendance_records('absent', 'Unpaid leave (absent)')
-                _apply_unpaid_deduction(working_days)
-                message = 'Unpaid leave approved. Salary deduction has been created.'
+                    _apply_attendance_records('absent', 'Unpaid leave')
+                message = 'Unpaid leave approved. Attendance marked as absent.'
             else:
                 # Paid leave → mark as leave (no salary hit)
                 _apply_attendance_records('leave', 'Approved leave')
