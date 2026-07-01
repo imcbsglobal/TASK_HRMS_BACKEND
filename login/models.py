@@ -84,6 +84,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     # granted all menus automatically and displayed as "Admin User" in the UI.
     is_admin_user = models.BooleanField(default=False)
 
+    # ── Can switch client ──────────────────────────────────────────────────────
+    # When False, the "Switch Client" button is hidden in the sidebar.
+    can_switch_client = models.BooleanField(default=True)
+
     # ── Tenant isolation ──────────────────────────────────────────────────────
     # Every USER belongs to the ADMIN who created them.
     # ADMIN and SUPER_ADMIN rows have this NULL.

@@ -19,6 +19,7 @@ class UserSerializer(serializers.ModelSerializer):
             'email', 'role', 'profile_image', 'employee_profile_image',
             'is_active', 'plain_password', 'work_location', 'client_id',
             'admin_owner', 'company_name', 'is_admin_user',
+            'can_switch_client',
         )
 
     def get_profile_image(self, obj):
@@ -49,6 +50,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
     client_id    = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     company_name = serializers.CharField(required=False, allow_blank=True, default='')
     is_admin_user = serializers.BooleanField(required=False, default=False)
+    can_switch_client = serializers.BooleanField(required=False, default=True)
 
     class Meta:
         model  = User
@@ -56,6 +58,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
             'id', 'username', 'password', 'first_name', 'last_name',
             'email', 'role', 'profile_image', 'is_active', 'work_location',
             'admin_owner', 'client_id', 'company_name', 'is_admin_user',
+            'can_switch_client',
         ]
 
     def validate_client_id(self, value):
@@ -104,13 +107,14 @@ class UserUpdateSerializer(serializers.ModelSerializer):
     profile_image = serializers.CharField(required=False, allow_null=True)
     password      = serializers.CharField(write_only=True, required=False, allow_blank=True)
     is_admin_user = serializers.BooleanField(required=False)
+    can_switch_client = serializers.BooleanField(required=False)
 
     class Meta:
         model  = User
         fields = [
             'username', 'password', 'first_name', 'last_name',
             'email', 'role', 'is_active', 'profile_image', 'work_location',
-            'is_admin_user',
+            'is_admin_user', 'can_switch_client',
         ]
 
     def update(self, instance, validated_data):

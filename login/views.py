@@ -176,6 +176,7 @@ class LoginView(APIView):
             "client_id":     user.client_id if user.role == 'ADMIN' else client_id,
             "company_setup_completed": setup_completed,
             "is_admin_user": user.is_admin_user,
+            "can_switch_client": user.can_switch_client,
         })
 
 
@@ -537,9 +538,14 @@ class CorporateClientListView(APIView):
         user = request.user
 
         # Resolve the effective client_id and company name for this session
+        # Both ADMIN role and Admin Users (is_admin_user) always have switch access.
+        # can_switch_client is a UI visibility flag only, not enforced here.
         if user.role == 'ADMIN':
             current_client_id = user.client_id
             current_company_name = user.company_name or user.username
+        elif user.is_admin_user:
+            current_client_id = user.admin_owner.client_id if user.admin_owner else None
+            current_company_name = user.company_name or (user.admin_owner.company_name if user.admin_owner else user.username)
         else:
             return Response(
                 {"detail": "Only Admin accounts can switch clients."},
@@ -637,8 +643,12 @@ class SwitchClientView(APIView):
             )
 
         # Resolve the caller's current client_id
+        # Both ADMIN role and Admin Users (is_admin_user) always have switch access.
+        # can_switch_client is a UI visibility flag only, not enforced here.
         if user.role == 'ADMIN':
             current_client_id = user.client_id
+        elif user.is_admin_user:
+            current_client_id = user.admin_owner.client_id if user.admin_owner else None
         else:
             return Response(
                 {"detail": "Only Admin accounts can switch clients."},
@@ -747,6 +757,7 @@ class SwitchClientView(APIView):
             "company_setup_completed": setup_completed,
             "switched_from": current_client_id,
             "switched_to":   target_client_id,
+            "can_switch_client": user.can_switch_client,
         })
 
 
