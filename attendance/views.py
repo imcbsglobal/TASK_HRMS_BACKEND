@@ -3374,6 +3374,18 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
             else:
                 return Response({'error': 'Already checked in today'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # ── Activity log ──────────────────────────────────────────────────────
+        ist_tz = pytz.timezone('Asia/Kolkata')
+        ci_local = attendance.check_in_time.astimezone(ist_tz)
+        log_activity(
+            user=user,
+            action_type='CREATE',
+            module='Attendance',
+            description=f"Face check-in at {ci_local.strftime('%I:%M %p')}",
+            request=request,
+        )
+        # ─────────────────────────────────────────────────────────────────────
+
         # ── Auto-detect late check-in ──────────────────────────────────────────
         _auto_create_late_request(user, admin_owner, attendance)
         # ─────────────────────────────────────────────────────────────────────
@@ -3444,6 +3456,18 @@ class FaceRecognitionViewSet(viewsets.ViewSet):
         if serializer.validated_data.get('notes'):
             attendance.notes = serializer.validated_data['notes']
         attendance.save()
+
+        # ── Activity log ──────────────────────────────────────────────────────
+        ist_tz = pytz.timezone('Asia/Kolkata')
+        co_local = attendance.check_out_time.astimezone(ist_tz)
+        log_activity(
+            user=user,
+            action_type='UPDATE',
+            module='Attendance',
+            description=f"Face check-out at {co_local.strftime('%I:%M %p')}",
+            request=request,
+        )
+        # ─────────────────────────────────────────────────────────────────────
 
         # ── Auto-detect early check-out ────────────────────────────────────────
         _auto_create_early_request(user, admin_owner, attendance)
